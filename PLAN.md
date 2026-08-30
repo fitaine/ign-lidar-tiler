@@ -207,6 +207,25 @@ downsampling, so peak memory is the whole raw cloud: 40 GB for Mont Aiguille's
 downsampling before the merge, pending a check on whether PDAL's voxel grid
 origin stays consistent across separate views.
 
+## Device choice (measured 2026-08-30, one 120k-sized tile)
+
+| points | GPU OptiX 4070 | CPU 5950X | peak VRAM | peak GPU power |
+|---|---|---|---|---|
+| 98,979,482 @ r0.325 | 43.5 s | 141.5 s | 6,376 MiB | 118.9 W |
+| 172,729,010 @ r0.225 | 107.1 s | 154.2 s | 11,531 MiB | 64.3 W |
+
+CPU is nearly flat in point count (+9% for +74%); GPU degrades sharply once
+VRAM fills. The curves cross near 210-230M points. So: under ~120M render GPU,
+above ~220M render CPU, and treat ~120M as the GPU-path ceiling on a 12 GB card.
+
+Two things the app must do as a result:
+
+- **set the render device explicitly** in the generated file rather than
+  inheriting whatever the scene was saved with (Mont Aiguille was saved CPU
+  while her preferences are OptiX)
+- **warn when a variant will exceed the card's VRAM**, since the binding limit
+  is the GPU's memory, not the system's
+
 ## Build order
 
 Stage 3 first. It is the part that unblocks scenes already lit, it can be
