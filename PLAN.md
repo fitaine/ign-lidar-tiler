@@ -108,6 +108,41 @@ stored as a custom property on the object. This is what lets stage 3 know which
 object is a proxy for which scene. Convention over object names was considered
 and rejected: it breaks the first time an object is renamed.
 
+## Precision rules (learned the hard way, 2026-08-30)
+
+**Always recentre before writing a PLY.** `writers.ply` with `dims: X=float`
+writes float32. In raw Lambert 93 that gives a 0.5 m resolution in Y and
+0.0625 m in X, so points get snapped to a lattice coarser than the voxel and
+comparable to the ball radius. Four existing scenes are affected (Nantua,
+Bunker Eperlecques, Montvernier, Lac des Milles Vaches). The app must never
+emit a PLY in absolute coordinates.
+
+**Recover offsets from the centroid, never the bounding box.** Quantisation
+biases min and max by up to half a lattice step; on Montvernier the two
+bbox-derived Y offsets disagreed by 0.34 m while the centroid was exact.
+
+**Accumulate in float64.** A numpy float32 mean over 27M vertices was off by
+about 4 m and looked like a genuine offset.
+
+## Headroom check
+
+Before offering a dense render, measure whether the scene has any. Voxelise the
+cloud at a few cell sizes and read points per occupied cell: at 1.0 the cloud
+has never been merged and already *is* the source data. Measured examples:
+La Plagne 36.9 pts/m² and still 1.17 pts/cell at a 10 cm voxel, so no headroom
+at all; Montvernier 9.1 pts/m² at voxel 0.6515, so roughly 3 to 4x available.
+
+"Already at source density, render as is" is a legitimate answer and the app
+should give it rather than doing a no-op swap.
+
+## Extending a scene
+
+Separate from densifying, and asked for on La Plagne: the footprint is too
+tight to frame the camera. Extending means downloading the neighbouring tiles
+and merging them into the existing cloud's coordinate frame, which needs the
+same origin recovery as the dense swap. Stage 1 and stage 3 share that
+machinery, so this is a small addition once both exist.
+
 ## Stage 3, prep render
 
 1. Read the tagged object out of the .blend.
