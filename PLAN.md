@@ -241,8 +241,10 @@ A 200 h budget allows 800 s per tile, so **time is not the constraint**. The
 dense penalty also shrinks with sample count: 2.46x at 128 spp but only 1.25x
 at 2048 spp, because BVH build and memory stalls amortise over more sampling.
 
-**VRAM is the constraint.** Working maximum set at **150M points** (~10.5 GB of
-12 GB, ~50 h per render). The app should warn when a variant would exceed the
+**VRAM is the constraint.** Working maximum set at **150M points**, now
+verified: 153,027,647 pts at radius 0.245 peaks at 10,234 of 12,282 MiB (83%)
+and 127.5 W, higher power than either neighbour, so the card is computing
+rather than stalling. ~234 s per tile, ~58 h for 900 tiles. The app should warn when a variant would exceed the
 card, and account for volumetrics, which on a 12 GB card are close to mutually
 exclusive with a dense cloud.
 
