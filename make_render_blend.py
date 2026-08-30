@@ -31,7 +31,77 @@ def parse_args():
     p.add_argument("--ply", required=True, help="Dense PLY to swap in")
     p.add_argument("--radius", type=float, required=True, help="Mesh to Points radius")
     p.add_argument("--out", required=True, help="Output .blend path")
+    p.add_argument("--strip-volumes", action="store_true",
+                   help="Remove volume objects and unlink Volume sockets, so a "
+                        "render-time measurement reflects the point cloud alone")
     return p.parse_args(argv)
+
+
+def volume_sources(report_only=True):
+    """Everything in the file that can make Cycles run volumetrics.
+
+    Not just Volume objects: any node linked into a Volume socket on a material
+    or world output triggers full volumetrics, even when cycles.volume_bounces
+    reads 0 and no volume object exists. That is expensive and very noisy, and
+    it would dominate a render-time measurement.
+    """
+    found = {"objects": [], "materials": [], "world": []}
+
+    for ob in bpy.data.objects:
+        if ob.type == "VOLUME":
+            found["objects"].append(ob.name)
+
+    def volume_linked(node_tree):
+        if not node_tree:
+            return False
+        for nd in node_tree.nodes:
+            if nd.bl_idname in ("ShaderNodeOutputMaterial", "ShaderNodeOutputWorld"):
+                sock = nd.inputs.get("Volume")
+                if sock is not None and sock.is_linked:
+                    return True
+        return False
+
+    for mat in bpy.data.materials:
+        if volume_linked(mat.node_tree):
+            found["materials"].append(mat.name)
+
+    for world in bpy.data.worlds:
+        if volume_linked(world.node_tree):
+            found["world"].append(world.name)
+
+    return found
+
+
+def strip_volumes():
+    """Remove volumetrics so a render-time measurement reflects the cloud."""
+    found = volume_sources()
+    for name in found["objects"]:
+        ob = bpy.data.objects.get(name)
+        if ob:
+            bpy.data.objects.remove(ob, do_unlink=True)
+            print(f"[volume] removed volume object {name!r}", flush=True)
+
+    for name in found["materials"] + found["world"]:
+        tree = None
+        mat = bpy.data.materials.get(name)
+        if mat:
+            tree = mat.node_tree
+        else:
+            world = bpy.data.worlds.get(name)
+            tree = world.node_tree if world else None
+        if not tree:
+            continue
+        for nd in tree.nodes:
+            if nd.bl_idname in ("ShaderNodeOutputMaterial", "ShaderNodeOutputWorld"):
+                sock = nd.inputs.get("Volume")
+                if sock is not None and sock.is_linked:
+                    for link in list(sock.links):
+                        tree.links.remove(link)
+                    print(f"[volume] unlinked Volume socket on {name!r}", flush=True)
+
+    # Mesh objects that only existed to hold a volume shader are left in place:
+    # removing them is a judgement call about the scene, not a mechanical fix.
+    return found
 
 
 def find_mesh_to_points(node_group):
@@ -130,6 +200,20 @@ def main():
     new.name = old_name
     new.data.name = old_name
     print(f"[swap] removed the old cloud, renamed the new one to {old_name!r}", flush=True)
+
+    found = volume_sources()
+    n_vol = sum(len(v) for v in found.values())
+    if n_vol:
+        print(f"[volume] FOUND volumetrics: objects={found['objects']} "
+              f"materials={found['materials']} world={found['world']}", flush=True)
+        if a.strip_volumes:
+            strip_volumes()
+        else:
+            print("[volume] left in place; pass --strip-volumes to remove them. "
+                  "A render-time measurement will be dominated by volume sampling.",
+                  flush=True)
+    else:
+        print("[volume] none found", flush=True)
 
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
