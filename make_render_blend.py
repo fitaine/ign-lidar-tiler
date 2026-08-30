@@ -185,8 +185,11 @@ def main():
         if sock.is_linked:
             print(f"[swap] WARNING Radius on {group.name!r} is linked, not setting it", flush=True)
             continue
-        print(f"[swap] radius {sock.default_value:.4f} -> {a.radius:.4f} "
+        scale = bpy.context.scene.unit_settings.scale_length
+        print(f"[swap] radius RAW {sock.default_value:.6f} -> {a.radius:.6f} "
               f"in {group.name!r}/{node.name!r}", flush=True)
+        print(f"[swap] scene scale_length={scale:g}, so the panel will show "
+              f"{a.radius * scale:.6f}", flush=True)
         sock.default_value = a.radius
         radius_set = True
     if not radius_set:
@@ -208,6 +211,8 @@ def main():
               f"materials={found['materials']} world={found['world']}", flush=True)
         if a.strip_volumes:
             strip_volumes()
+            bpy.context.scene.cycles.volume_bounces = 0
+            print("[volume] volume_bounces -> 0", flush=True)
         else:
             print("[volume] left in place; pass --strip-volumes to remove them. "
                   "A render-time measurement will be dominated by volume sampling.",
