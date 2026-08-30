@@ -226,6 +226,26 @@ Two things the app must do as a result:
 - **warn when a variant will exceed the card's VRAM**, since the binding limit
   is the GPU's memory, not the system's
 
+## Production budget (measured 2026-08-30)
+
+Real settings: 2048 samples, no denoise, no adaptive, no time limit. Grid from
+`render_tiles_unlimited.py`: 30 x 30 = 900 tiles of 4096 x 3200 for a 120k
+render of a 16000x12500 scene.
+
+| points | per tile | 900-tile render |
+|---|---|---|
+| 98,979,482 @ r0.325 | ~184 s | ~46 h |
+| 172,729,010 @ r0.225 | ~230 s | ~58 h |
+
+A 200 h budget allows 800 s per tile, so **time is not the constraint**. The
+dense penalty also shrinks with sample count: 2.46x at 128 spp but only 1.25x
+at 2048 spp, because BVH build and memory stalls amortise over more sampling.
+
+**VRAM is the constraint.** Working maximum set at **150M points** (~10.5 GB of
+12 GB, ~50 h per render). The app should warn when a variant would exceed the
+card, and account for volumetrics, which on a 12 GB card are close to mutually
+exclusive with a dense cloud.
+
 ## Build order
 
 Stage 3 first. It is the part that unblocks scenes already lit, it can be
