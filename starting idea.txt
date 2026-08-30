@@ -1,0 +1,10 @@
+I need you to build an app to simplify my /lidar workflow.
+
+Usually, I go download tiles I'm interested in to light them in blender and render them in Rendafar. I came to realize that blender could not handle as large files as rendafar is handling (because i's headless). So it made me realise that my lidar render could be even more dense points wize. I could work on a light weight tile and rendafar would actually render a duplicate file where the sparse tiles would be replaced by the full density tiles. So that is the first thing: be able to work on proxy and render full tiles. 
+The second idea is to simplify also the beginning of the workflow when I download the tiles. Now I dl myslef and launch the script that stitch it and import the orthophoto data and apply it and also choose the density. What I imagine would be something like an app where there is a map with 2 layers (ortho and map) and I would select (rectangle and free) part of the map I need, the app would download it and create 2 versions: the sparse (with a min threshold of X M points) and the full density (with a max threshold). it would apply the ortho photo on both. Then I do the creative work on blender. Then there would be a step where I want to render and the app create the rendering files that would not be meant to be open with the GUI but only for the headless render. That could be Rendafar maybe. it would switch the sparse for the full but also modify the ball radius set in the Geometry nodes. This set radius is now in the filename so I can set the radius correctly in blender. The radius is calculate from the density.
+
+I want first to chat, then plan, and build. 
+
+I have create a subfolder in the LIDAR main folder, called C:\Users\Tiphaine\Pictures\3D\LIDAR PROJECT\ign-lidar-tiler
+You can work in it.
+I also created a GitHub: https://github.com/fitaine/ign-lidar-tiler it is public

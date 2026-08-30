@@ -1,0 +1,52 @@
+# --- LiDAR data: never commit, these are gigabytes ---
+*.laz
+*.las
+*.copc.laz
+*.ply
+*.tif
+*.tiff
+*.vrt
+*.blend
+*.blend[0-9]*
+
+# Scene working dirs and pipeline scratch
+scenes/
+data/
+output/
+_ortho_tiles_tmp/
+*_pipeline.json
+*_export.json
+
+# Per-scene manifests are local state, not source
+scene.json
+**/scene.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- Node / front end ---
+node_modules/
+dist/
+build/
+.vite/
+
+# --- Local config and secrets ---
+.env
+.env.*
+config.local.*
+settings.local.json
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
