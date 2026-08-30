@@ -70,9 +70,24 @@ def main():
     p.add_argument("--dry-run", action="store_true", help="Write the pipeline JSON only")
     a = p.parse_args()
 
-    tiles = sorted(Path(a.tiles).glob("*.copc.laz"))
+    # Validate everything up front. PDAL opens the raster only at the
+    # colorization stage, which is after all the reading and downsampling, so a
+    # bad path otherwise fails an hour into the run.
+    tiles_dir = Path(a.tiles)
+    if not tiles_dir.is_dir():
+        sys.exit(f"--tiles is not a folder: {tiles_dir}")
+    tiles = sorted(tiles_dir.glob("*.copc.laz"))
     if not tiles:
-        sys.exit(f"No .copc.laz found in {a.tiles}")
+        sys.exit(f"No .copc.laz found in {tiles_dir}")
+
+    if a.raster:
+        raster = Path(a.raster)
+        if not raster.is_file():
+            sys.exit(f"--raster not found: {raster}")
+        probe = subprocess.run([PDAL_EXE, "info", "--summary", str(tiles[0])],
+                               capture_output=True)
+        if probe.returncode != 0:
+            sys.exit(f"cannot read {tiles[0].name}: {probe.stderr.decode(errors='replace')}")
 
     origin = [float(v) for v in a.origin.split(",")]
     if len(origin) != 3:
