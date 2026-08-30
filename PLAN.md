@@ -177,6 +177,36 @@ one tile of one scene at three densities and look at where the difference stops
 being visible. That number, expressed as a ratio to the sparse voxel, becomes
 the default. Until it is measured the default stays conservative.
 
+## Measured results (2026-08-30, Mont Aiguille)
+
+Stages 3a and 3b are built and working end to end.
+
+| points | voxel | raw radius | render 800x625/32 | peak RAM |
+|---|---|---|---|---|
+| 98,979,482 | 0.65 | 0.325 | 12.6 s | 16.0 GB |
+| 172,729,010 | 0.45 | 0.225 | 17.9 s | 27.5 GB |
+
+RAM is the binding constraint, about 0.16 GB per million points, so roughly a
+350M ceiling on a 64 GB machine. Render time is sub-linear in point count
+because the radius falls as density rises.
+
+Two gotchas worth keeping:
+
+**The radius socket is unit-scaled for display.** Mont Aiguille has
+`scale_length = 0.01`, so a raw 0.325 shows as 0.00325 in the panel. Always set
+and report the raw value alongside the displayed one.
+
+**Volumetrics must be stripped before any render-time measurement.** Volume
+objects are not enough to look for: a node linked into a material or world
+Volume socket triggers full volumetrics on its own. Mont Aiguille had four
+sources and `volume_bounces` at 8.
+
+**densify.py does not scale past this scene.** It merges all tiles before
+downsampling, so peak memory is the whole raw cloud: 40 GB for Mont Aiguille's
+565M points. Aravis at 1.18 billion would not fit. The fix is per-tile
+downsampling before the merge, pending a check on whether PDAL's voxel grid
+origin stays consistent across separate views.
+
 ## Build order
 
 Stage 3 first. It is the part that unblocks scenes already lit, it can be
