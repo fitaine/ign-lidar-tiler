@@ -65,13 +65,25 @@ def run(cmd, label):
 
 
 def run_capture(cmd, label):
+    """Run, echoing output live AND returning it.
+
+    capture_output=True holds everything until the process exits. That was
+    fine when the voxel solve probed three tiles; it now measures every tile
+    and can run for half an hour, during which the log showed nothing after
+    "solving the voxel" and looked hung.
+    """
     print(f"\n[prep] === {label} ===", flush=True)
-    r = subprocess.run([str(c) for c in cmd], capture_output=True, text=True)
-    sys.stdout.write(r.stdout)
-    if r.returncode != 0:
-        sys.stdout.write(r.stderr[-2000:])
-        sys.exit(f"[prep] {label} failed with {r.returncode}")
-    return r.stdout
+    proc = subprocess.Popen([str(c) for c in cmd], stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+    lines = []
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        lines.append(line)
+    proc.wait()
+    if proc.returncode != 0:
+        sys.exit(f"[prep] {label} failed with {proc.returncode}")
+    return "".join(lines)
 
 
 def main():
@@ -176,6 +188,12 @@ def main():
         cmd = [sys.executable, HERE / "solve_voxel.py",
                "--tiles", tiles_dir, "--target", target, "--multiplier", mult,
                "--coverage", f"{coverage:.6f}"]
+        n_tiles = len(list(tiles_dir.glob("*.copc.laz")))
+        print(f"[prep] the solve measures all {n_tiles} tiles, which takes a few "
+              f"minutes each; progress follows", flush=True)
+        n_tiles = len(list(tiles_dir.glob("*.copc.laz")))
+        print(f"[prep] the solve measures all {n_tiles} tiles at the coarse "
+              f"voxel; a few minutes each, progress follows", flush=True)
         out = run_capture(cmd, f"solving the voxel for {target:,} points")
         voxel = None
         for line in out.splitlines():

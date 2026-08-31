@@ -547,8 +547,16 @@ async function poll(jid){
     const r = await fetch('/api/job/' + jid);
     const j = await r.json();
     st.textContent = j.state || '';
-    log.textContent = (j.log || []).join('\n');
-    log.scrollTop = log.scrollHeight;
+    // Reassigning textContent destroys any selection, and this polls every
+    // 1.2 s, so text could never be selected long enough to copy. Only touch
+    // it when it has actually changed, and leave the scroll alone when the
+    // user has scrolled up to read something.
+    const next = (j.log || []).join('\n');
+    if (next !== log.textContent) {
+      const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+      log.textContent = next;
+      if (atBottom) log.scrollTop = log.scrollHeight;
+    }
     if (j.state === 'running' || j.state === 'queued') setTimeout(tick, 1200);
     else { document.getElementById('go').disabled = false;
            document.getElementById('p-go').disabled = false; }
