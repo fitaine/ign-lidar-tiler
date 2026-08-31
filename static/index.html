@@ -75,9 +75,12 @@
     <section class="acq">
       <h2>Select</h2>
       <div class="row">
-        <button id="b-rect" class="on">Rectangle</button>
+        <button id="b-nav" class="on">Navigate</button>
+        <button id="b-rect">Rectangle</button>
         <button id="b-poly">Free shape</button>
-        <button id="b-clear">Clear</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="b-clear">Clear selection</button>
       </div>
       <div class="hint" id="drawhint">Drag on the map to draw a rectangle.</div>
       <div id="sel" style="margin-top:10px"></div>
@@ -164,6 +167,7 @@
   </div>
 </div>
 <script>
+// ── map ─────────────────────────────────────────────────────────────────────
 const WMTS = (layer, fmt) =>
   `https://data.geopf.fr/wmts?SERVICE=WMTS&VERSION=1.0.0&REQUEST=GetTile` +
   `&LAYER=${layer}&STYLE=normal&FORMAT=${fmt}&TILEMATRIXSET=PM` +
@@ -184,10 +188,41 @@ const map = new maplibregl.Map({
       {id:'plan',  type:'raster', source:'plan', layout:{visibility:'none'}}
     ]
   },
-  center: [5.5503, 44.8409], zoom: 12
+  center: [5.5503, 44.8409], zoom: 12,
+  dragRotate: false, pitchWithRotate: false, touchPitch: false
 });
+
+// This is a map for picking a footprint, not a 3D view: rotation and tilt do
+// nothing useful here and getting back to north-up is a nuisance.
+map.dragRotate.disable();
+map.touchZoomRotate.disableRotation();
+map.setMaxPitch(0);
+if (map.keyboard && map.keyboard.disableRotation) map.keyboard.disableRotation();
+
 // The pane can size the container after the map is constructed.
 new ResizeObserver(() => map.resize()).observe(document.getElementById('map'));
+
+// Right-drag pans, in every mode, the way it does on any map. MapLibre has no
+// button remapping, so this is wired on the canvas directly.
+(() => {
+  const cc = map.getCanvasContainer();
+  let last = null;
+  cc.addEventListener('contextmenu', e => e.preventDefault());
+  cc.addEventListener('mousedown', e => {
+    if (e.button !== 2) return;
+    last = {x: e.clientX, y: e.clientY};
+    cc.style.cursor = 'grabbing';
+    e.preventDefault(); e.stopPropagation();
+  }, true);
+  window.addEventListener('mousemove', e => {
+    if (!last) return;
+    map.panBy([last.x - e.clientX, last.y - e.clientY], {duration: 0});
+    last = {x: e.clientX, y: e.clientY};
+  });
+  window.addEventListener('mouseup', e => {
+    if (e.button === 2 && last) { last = null; cc.style.cursor = ''; }
+  });
+})();
 
 const empty = {type:'FeatureCollection', features:[]};
 map.on('load', () => {
@@ -208,15 +243,13 @@ map.on('load', () => {
 });
 map.on('moveend', refreshGrid);
 
+// ── tile grid ───────────────────────────────────────────────────────────────
 let gridTimer = null;
 function refreshGrid(){
   const src = () => map.getSource('grid');
-  if (!src()) return;                          // style not ready yet
-  if (!document.getElementById('showgrid').checked) {
-    map.getSource('grid') && map.getSource('grid').setData(empty); return;
-  }
-  if (map.getZoom() < 11) {                     // the grid is meaningless zoomed out
-    map.getSource('grid') && map.getSource('grid').setData(empty); return;
+  if (!src()) return;                            // style not ready yet
+  if (!document.getElementById('showgrid').checked || map.getZoom() < 11){
+    src().setData(empty); return;                // meaningless zoomed out
   }
   clearTimeout(gridTimer);
   gridTimer = setTimeout(async () => {
@@ -240,77 +273,21 @@ document.getElementById('b-ortho').onclick = () => base('ortho');
 document.getElementById('b-plan').onclick  = () => base('plan');
 
 // ── drawing ─────────────────────────────────────────────────────────────────
-let mode = 'rect', ring = null, dragStart = null, polyPts = [];
+let mode = 'nav', ring = null, dragStart = null, polyPts = [];
 const hint = document.getElementById('drawhint');
 
 function setMode(m){
   mode = m; polyPts = []; dragStart = null;
-  document.getElementById('b-rect').classList.toggle('on', m==='rect');
-  document.getElementById('b-poly').classList.toggle('on', m==='poly');
+  for (const pair of [['b-nav','nav'],['b-rect','rect'],['b-poly','poly']])
+    document.getElementById(pair[0]).classList.toggle('on', m===pair[1]);
   map.dragPan.enable();
-  hint.textContent = m==='rect'
-    ? 'Drag on the map to draw a rectangle.'
-    : 'Click to add points. Double-click, or click the first point, to close.';
+  hint.textContent =
+    m==='nav'  ? 'Drag to move the map. Right-drag pans in any mode.' :
+    m==='rect' ? 'Left-drag to draw a rectangle. Right-drag to pan.' :
+                 'Left-click to add points, double-click or click the first point to close. Right-drag to pan.';
 }
+document.getElementById('b-nav').onclick  = () => setMode('nav');
 document.getElementById('b-rect').onclick = () => setMode('rect');
-
-// ── mode switch ─────────────────────────────────────────────────────────────
-function setPanel(which){
-  document.querySelectorAll('.acq').forEach(e =>
-    e.style.display = which==='acq' ? '' : 'none');
-  document.querySelectorAll('.prep').forEach(e =>
-    e.style.display = which==='prep' ? '' : 'none');
-  document.getElementById('m-acq').classList.toggle('on', which==='acq');
-  document.getElementById('m-prep').classList.toggle('on', which==='prep');
-}
-document.getElementById('m-acq').onclick  = () => setPanel('acq');
-document.getElementById('m-prep').onclick = () => setPanel('prep');
-document.getElementById('p-vol').onchange = e =>
-  document.getElementById('p-volwarn').style.display = e.target.checked ? '' : 'none';
-
-// ── render prep ─────────────────────────────────────────────────────────────
-document.getElementById('p-load').onclick = async () => {
-  const info = document.getElementById('p-info');
-  const scene = document.getElementById('p-scene').value.trim();
-  if (!scene){ info.innerHTML = '<div class="warn">Give a scene.json path.</div>'; return; }
-  info.innerHTML = '<div class="hint">reading…</div>';
-  const r = await fetch('/api/scene', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify({scene})});
-  const m = await r.json();
-  if (m.error){ info.innerHTML = `<div class="warn">${m.error}</div>`; return; }
-  const vs = (m.variants||[]).map(v =>
-    `<div class="stat"><span>${v.role} ${v.voxel}</span><span>${(v.points/1e6).toFixed(1)}M · r ${v.radius}</span></div>`).join('');
-  info.innerHTML =
-    `<div class="stat"><span>scene</span><span>${m.name}</span></div>` +
-    `<div class="stat"><span>tiles</span><span>${(m.tiles||[]).length}</span></div>` +
-    `<div class="stat"><span>raw points</span><span>${((m.raw_points||0)/1e6).toFixed(0)}M</span></div>` +
-    vs +
-    (m._tiles_present ? '' :
-      `<div class="warn" style="margin-top:8px">Tile archive missing at
-       ${m._tiles_dir} — the dense cloud is rebuilt from the raw tiles, so they
-       must still be on disk.</div>`);
-  document.getElementById('p-go').disabled = !m._tiles_present;
-};
-
-document.getElementById('p-go').onclick = async () => {
-  const body = {
-    scene: document.getElementById('p-scene').value.trim(),
-    blend: document.getElementById('p-blend').value.trim(),
-    target: Math.round(parseFloat(document.getElementById('p-target').value) * 1e6),
-    cell: parseFloat(document.getElementById('p-cell').value),
-    no_crop: document.getElementById('p-nocrop').checked,
-    keep_volumes: document.getElementById('p-vol').checked,
-    out: document.getElementById('p-out').value.trim()
-  };
-  if (!body.blend){ alert('The lit .blend is required.'); return; }
-  const r = await fetch('/api/prepare', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-  const d = await r.json();
-  if (d.error){ alert(d.error); return; }
-  document.getElementById('p-go').disabled = true;
-  document.getElementById('jobsec').style.display = 'block';
-  poll(d.job);
-};
 document.getElementById('b-poly').onclick = () => setMode('poly');
 document.getElementById('b-clear').onclick = () => {
   ring = null; polyPts = [];
@@ -328,19 +305,21 @@ function drawRing(pts, closed){
               coordinates: closed ? [r] : r}, properties:{}});
 }
 
+const isLeft = e => !e.originalEvent || e.originalEvent.button === 0;
+
 map.on('mousedown', e => {
-  if (mode !== 'rect') return;
+  if (mode !== 'rect' || !isLeft(e)) return;
   dragStart = [e.lngLat.lng, e.lngLat.lat];
   map.dragPan.disable();
 });
 map.on('mousemove', e => {
   if (mode !== 'rect' || !dragStart) return;
-  const [x0,y0] = dragStart, x1 = e.lngLat.lng, y1 = e.lngLat.lat;
+  const x0 = dragStart[0], y0 = dragStart[1], x1 = e.lngLat.lng, y1 = e.lngLat.lat;
   drawRing([[x0,y0],[x1,y0],[x1,y1],[x0,y1]], true);
 });
 map.on('mouseup', e => {
-  if (mode !== 'rect' || !dragStart) return;
-  const [x0,y0] = dragStart, x1 = e.lngLat.lng, y1 = e.lngLat.lat;
+  if (mode !== 'rect' || !dragStart || !isLeft(e)) return;
+  const x0 = dragStart[0], y0 = dragStart[1], x1 = e.lngLat.lng, y1 = e.lngLat.lat;
   dragStart = null; map.dragPan.enable();
   if (Math.abs(x1-x0) < 1e-5 || Math.abs(y1-y0) < 1e-5) return;
   ring = [[x0,y0],[x1,y0],[x1,y1],[x0,y1],[x0,y0]];
@@ -348,7 +327,7 @@ map.on('mouseup', e => {
   select();
 });
 map.on('click', e => {
-  if (mode !== 'poly') return;
+  if (mode !== 'poly' || !isLeft(e)) return;
   const p = [e.lngLat.lng, e.lngLat.lat];
   if (polyPts.length > 2){
     const first = map.project(polyPts[0]), now = map.project(p);
@@ -375,9 +354,9 @@ async function select(){
   const r = await fetch('/api/select', {method:'POST',
     headers:{'Content-Type':'application/json'}, body: JSON.stringify({ring})});
   const d = await r.json();
-  if (d.error){ sel.innerHTML = `<div class="warn">${d.error}</div>`; return; }
+  if (d.error){ sel.innerHTML = '<div class="warn">' + d.error + '</div>'; return; }
   map.getSource('hit').setData(d.geojson);
-  const [minx,miny,maxx,maxy] = d.bbox;
+  const minx = d.bbox[0], miny = d.bbox[1], maxx = d.bbox[2], maxy = d.bbox[3];
   sel.innerHTML =
     `<div class="stat"><span>tiles</span><span>${d.count}</span></div>` +
     `<div class="stat"><span>area</span><span>${d.count} km²</span></div>` +
@@ -388,13 +367,13 @@ async function select(){
   document.getElementById('go').disabled = d.count === 0;
 }
 
-// ── run ─────────────────────────────────────────────────────────────────────
+// ── acquire ─────────────────────────────────────────────────────────────────
 document.getElementById('go').onclick = async () => {
   const name = document.getElementById('name').value.trim();
   const out  = document.getElementById('out').value.trim();
   if (!name || !out){ alert('Name and output folder are required.'); return; }
   const body = {
-    ring, name, out,
+    ring: ring, name: name, out: out,
     target: Math.round(parseFloat(document.getElementById('target').value) * 1e6),
     raster_res: parseFloat(document.getElementById('rres').value),
     multiplier: parseFloat(document.getElementById('mult').value),
@@ -409,23 +388,7 @@ document.getElementById('go').onclick = async () => {
   poll(d.job);
 };
 
-async function poll(jid){
-  const st = document.getElementById('jstate'), log = document.getElementById('log');
-  const tick = async () => {
-    const r = await fetch('/api/job/' + jid);
-    const j = await r.json();
-    st.textContent = j.state || '';
-    log.textContent = (j.log || []).join('\n');
-    log.scrollTop = log.scrollHeight;
-    if (j.state === 'running' || j.state === 'queued') setTimeout(tick, 1200);
-    else { document.getElementById('go').disabled = false;
-           document.getElementById('p-go').disabled = false; }
-  };
-  tick();
-}
-setMode('rect');
-
-// ── mode switch ─────────────────────────────────────────────────────────────
+// ── panels ──────────────────────────────────────────────────────────────────
 function setPanel(which){
   document.querySelectorAll('.acq').forEach(e =>
     e.style.display = which==='acq' ? '' : 'none');
@@ -446,9 +409,9 @@ document.getElementById('p-load').onclick = async () => {
   if (!scene){ info.innerHTML = '<div class="warn">Give a scene.json path.</div>'; return; }
   info.innerHTML = '<div class="hint">reading…</div>';
   const r = await fetch('/api/scene', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify({scene})});
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({scene: scene})});
   const m = await r.json();
-  if (m.error){ info.innerHTML = `<div class="warn">${m.error}</div>`; return; }
+  if (m.error){ info.innerHTML = '<div class="warn">' + m.error + '</div>'; return; }
   const vs = (m.variants||[]).map(v =>
     `<div class="stat"><span>${v.role} ${v.voxel}</span><span>${(v.points/1e6).toFixed(1)}M · r ${v.radius}</span></div>`).join('');
   info.innerHTML =
@@ -457,9 +420,8 @@ document.getElementById('p-load').onclick = async () => {
     `<div class="stat"><span>raw points</span><span>${((m.raw_points||0)/1e6).toFixed(0)}M</span></div>` +
     vs +
     (m._tiles_present ? '' :
-      `<div class="warn" style="margin-top:8px">Tile archive missing at
-       ${m._tiles_dir} — the dense cloud is rebuilt from the raw tiles, so they
-       must still be on disk.</div>`);
+      `<div class="warn" style="margin-top:8px">Tile archive missing at ${m._tiles_dir} —
+       the dense cloud is rebuilt from the raw tiles, so they must still be on disk.</div>`);
   document.getElementById('p-go').disabled = !m._tiles_present;
 };
 
@@ -482,6 +444,25 @@ document.getElementById('p-go').onclick = async () => {
   document.getElementById('jobsec').style.display = 'block';
   poll(d.job);
 };
+
+// ── jobs ────────────────────────────────────────────────────────────────────
+async function poll(jid){
+  const st = document.getElementById('jstate'), log = document.getElementById('log');
+  const tick = async () => {
+    const r = await fetch('/api/job/' + jid);
+    const j = await r.json();
+    st.textContent = j.state || '';
+    log.textContent = (j.log || []).join('\n');
+    log.scrollTop = log.scrollHeight;
+    if (j.state === 'running' || j.state === 'queued') setTimeout(tick, 1200);
+    else { document.getElementById('go').disabled = false;
+           document.getElementById('p-go').disabled = false; }
+  };
+  tick();
+}
+
+setPanel('acq');
+setMode('nav');
 </script>
 </body>
 </html>
