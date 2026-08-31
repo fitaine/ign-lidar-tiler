@@ -37,8 +37,9 @@ def parse_args():
                    help="Delete this object before saving. Repeatable. Use it for "
                         "a superseded cloud still sitting in the scene.")
     p.add_argument("--strip-volumes", action="store_true",
-                   help="Remove volume objects and unlink Volume sockets, so a "
-                        "render-time measurement reflects the point cloud alone")
+                   help="Remove volume objects and unlink Volume sockets. Off by "
+                        "default: volumetrics are part of the image. Use it to "
+                        "measure what the point cloud alone costs.")
     return p.parse_args(argv)
 
 
@@ -256,9 +257,10 @@ def main():
             bpy.context.scene.cycles.volume_bounces = 0
             print("[volume] volume_bounces -> 0", flush=True)
         else:
-            print("[volume] left in place; pass --strip-volumes to remove them. "
-                  "A render-time measurement will be dominated by volume sampling.",
-                  flush=True)
+            print("[volume] left in place, as part of the image. They do cost "
+                  "render time and VRAM alongside the cloud, so if a render is "
+                  "unexpectedly slow this is the first thing to check. "
+                  "--strip-volumes removes them.", flush=True)
     else:
         print("[volume] none found", flush=True)
 

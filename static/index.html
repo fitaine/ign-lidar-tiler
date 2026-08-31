@@ -171,10 +171,12 @@
         carving in Blender.</div>
       <div class="check">
         <input type="checkbox" id="p-vol">
-        <label for="p-vol" style="margin:0">Keep volumetrics</label>
+        <label for="p-vol" style="margin:0">Remove volumetrics</label>
       </div>
-      <div class="hint warn" id="p-volwarn" style="display:none">Volumetrics
-        compete with the dense cloud for VRAM and dominate render time.</div>
+      <div class="hint">Off by default: volumetrics are part of the image.
+        Tick this only to measure what the point cloud alone costs.</div>
+      <div class="hint warn" id="p-volwarn" style="display:none">The render will
+        have no fog or atmosphere. This changes the look, not just the speed.</div>
       <label for="p-out">Output .blend (optional)</label>
       <input id="p-out" placeholder="auto: <name> - 150M-HEADLESS.blend">
       <button class="go" id="p-go" disabled>Prepare render file</button>
@@ -553,7 +555,7 @@ document.getElementById('p-go').onclick = async () => {
     target: Math.round(parseFloat(document.getElementById('p-target').value) * 1e6),
     cell: parseFloat(document.getElementById('p-cell').value),
     no_crop: document.getElementById('p-nocrop').checked,
-    keep_volumes: document.getElementById('p-vol').checked,
+    strip_volumes: document.getElementById('p-vol').checked,
     out: document.getElementById('p-out').value.trim()
   };
   if (!body.blend){ alert('The lit .blend is required.'); return; }

@@ -268,8 +268,8 @@ class Handler(BaseHTTPRequestHandler):
                 args += ["--out", clean_path(body["out"])]
             if body.get("no_crop"):
                 args += ["--no-crop"]
-            if body.get("keep_volumes"):
-                args += ["--keep-volumes"]
+            if body.get("strip_volumes"):
+                args += ["--strip-volumes"]
             jid = uuid.uuid4().hex[:12]
             with JOBS_LOCK:
                 JOBS[jid] = {"id": jid, "state": "queued", "log": [], "args": args}

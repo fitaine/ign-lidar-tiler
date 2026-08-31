@@ -93,9 +93,10 @@ def main():
                    help="Delete this object from the render file. Repeatable.")
     p.add_argument("--no-crop", action="store_true",
                    help="Skip the carve mask and keep the whole footprint")
-    p.add_argument("--keep-volumes", action="store_true",
-                   help="Leave volumetrics in place (they will dominate render time "
-                        "and compete for VRAM with the dense cloud)")
+    p.add_argument("--strip-volumes", action="store_true",
+                   help="Remove volumetrics. Off by default: they are part of the "
+                        "image, not overhead. Use this only when measuring what "
+                        "the point cloud alone costs.")
     p.add_argument("--out", default=None, help="Output .blend")
     p.add_argument("--blender-exe", default=None)
     a = p.parse_args()
@@ -246,7 +247,7 @@ def main():
         cmd += ["--object", a.object]
     for d in a.drop:
         cmd += ["--drop", d]
-    if not a.keep_volumes:
+    if a.strip_volumes:
         cmd += ["--strip-volumes"]
     run(cmd, "writing the render .blend")
 
