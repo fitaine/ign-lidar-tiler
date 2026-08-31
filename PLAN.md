@@ -327,7 +327,7 @@ assumes.
 
 ## Running it
 
-    python server.py            # then open http://localhost:8765
+    python server.py            # then open http://localhost:8770
 
 Draw a rectangle or a free shape, name the scene, choose an output folder and
 press Acquire. Then light and carve in Blender, tag the cloud with the add-on,

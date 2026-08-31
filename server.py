@@ -2,7 +2,7 @@
 
 Stage 1 UI of the IGN LiDAR Tiler (see PLAN.md):
 
-    python server.py            # then open http://localhost:8765
+    python server.py            # then open http://localhost:8770
 
 Built on the standard library. FastAPI was the original plan, but nothing here
 needs it and this machine has no web framework installed; a local single-user
@@ -27,7 +27,10 @@ from lambert93 import to_lambert, to_wgs84
 
 HERE = Path(__file__).resolve().parent
 STATIC = HERE / "static"
-PORT = 8765
+# NOT 8765: that is rendafar's port. Squatting on it made rendafar's desktop
+# app send its requests here, where an unknown route replies {"error": "not
+# found"} — which it showed as a popup, looking like a missing .blend.
+PORT = 8770
 
 JOBS = {}
 JOBS_LOCK = threading.Lock()
@@ -302,7 +305,19 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else PORT
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    if port == 8765:
+        print("Port 8765 belongs to rendafar. Its app would end up talking to "
+              "this server and getting confusing errors. Refusing to start.")
+        sys.exit(2)
+    try:
+        srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    except OSError as e:
+        # Binding failure must be loud: a silent fallback is how one app ends
+        # up answering another app's requests.
+        print(f"Cannot listen on port {port}: {e}")
+        print("Something else is already using it. Pass a different port:")
+        print(f"    python server.py {port + 1}")
+        sys.exit(2)
     print(f"IGN LiDAR Tiler running at http://localhost:{port}")
     print("Ctrl+C to stop.")
     try:
