@@ -58,6 +58,12 @@ def main():
                    help="Sparse target point count (default 40M)")
     p.add_argument("--voxel", type=float, default=None,
                    help="Skip solving and use this voxel")
+    p.add_argument("--origin", default=None,
+                   help="Force the origin, X,Y,Z in Lambert 93, instead of deriving "
+                        "it from the tiles. This is how you EXTEND an existing "
+                        "scene: pass its origin and a wider footprint, and the new "
+                        "cloud lands in the same local frame, so the cameras and "
+                        "lighting in the .blend stay valid.")
     p.add_argument("--raster-res", type=float, default=0.20,
                    help="Ortho resolution m/px (default 0.20, IGN native)")
     p.add_argument("--layer", default="ortho", help="WMS layer shortcut")
@@ -123,8 +129,15 @@ def main():
         miny = min(miny, b["miny"]); maxy = max(maxy, b["maxy"])
         minz = min(minz, b["minz"]); maxz = max(maxz, b["maxz"])
 
-    # Her convention: X and Y floored to the kilometre, Z at the scene floor.
-    origin = [float(int(minx // 1000) * 1000), float(int(miny // 1000) * 1000), round(minz, 2)]
+    if a.origin:
+        origin = [float(v) for v in a.origin.split(",")]
+        if len(origin) != 3:
+            sys.exit("--origin needs three comma-separated values")
+        print(f"[acquire] using the given origin (extending an existing scene)", flush=True)
+    else:
+        # Her convention: X and Y floored to the kilometre, Z at the scene floor.
+        origin = [float(int(minx // 1000) * 1000),
+                  float(int(miny // 1000) * 1000), round(minz, 2)]
     print(f"[acquire] extent {maxx-minx:.0f} x {maxy-miny:.0f} m, "
           f"relief {maxz-minz:.0f} m, {raw_total:,} raw points", flush=True)
     print(f"[acquire] origin {origin}", flush=True)
@@ -201,6 +214,7 @@ def main():
         "raster": raster.name,
         "raster_res": a.raster_res,
         "radius_multiplier": a.multiplier,
+        "origin_forced": bool(a.origin),
         "variants": [{
             "role": "sparse", "file": ply.name, "voxel": voxel,
             "radius": radius, "points": n_out,
