@@ -304,10 +304,11 @@ that already works.
    area, which kept 54.1% of its points (the excess is terrain: the middle of
    that tile is steeper, so it carries more surface per square metre).
 6. **2** DONE. `blender_addon/ign_lidar_tiler.py`.
-7. **UI** DONE for stage 1: `server.py` + `static/index.html`. Rectangle and
-   free-shape drawing over IGN ortho/plan, live tile grid, tile count, area,
-   extent and download size, then it runs `acquire.py` and streams the log.
-   Stage 3 is not in the UI yet: it still runs from the command line.
+7. **UI** DONE, both stages. `server.py` + `static/index.html`, two panels:
+   *Acquire* draws a rectangle or free shape over IGN ortho/plan with a live
+   tile grid and reports tile count, area, extent and download size before
+   running `acquire.py`; *Render prep* loads a `scene.json`, shows its
+   variants, and runs `prepare_render.py`. Both stream their log back.
 
 ## Stack
 
@@ -330,7 +331,11 @@ assumes.
 
 Draw a rectangle or a free shape, name the scene, choose an output folder and
 press Acquire. Then light and carve in Blender, tag the cloud with the add-on,
-and run the render prep:
+and use the Render prep panel, or the same thing on the command line:
+
+    python prepare_render.py --scene scene.json --blend lit.blend --target 150000000
+
+which runs these four steps in order and records the result in the manifest:
 
     blender -b scene.blend --python extract_mask.py -- --object <cloud> --cell 3.0 --out mask.npz
     python densify_tiled.py --tiles <dir> --raster <tif> --voxel <v> --origin <x,y,z> --name <n> --out <dir>

@@ -195,6 +195,7 @@ def main():
         "relief": round(maxz - minz, 2),
         "footprint": ({"type": "Polygon", "coordinates": [poly]} if poly else None),
         "cropped_to_footprint": bool(a.crop_to_shape and poly),
+        "tiles_dir": str(tiles_dir),
         "tiles": [t.name for t in tiles],
         "raw_points": raw_total,
         "raster": raster.name,

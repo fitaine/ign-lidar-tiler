@@ -49,10 +49,10 @@ def tiles_as_geojson(feats):
     return {"type": "FeatureCollection", "features": out}
 
 
-def run_job(job_id, args):
+def run_job(job_id, args, script="acquire.py"):
     with JOBS_LOCK:
         JOBS[job_id]["state"] = "running"
-    proc = subprocess.Popen([sys.executable, "-u", str(HERE / "acquire.py")] + args,
+    proc = subprocess.Popen([sys.executable, "-u", str(HERE / script)] + args,
                             cwd=str(HERE), stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, bufsize=1)
     with JOBS_LOCK:
@@ -143,6 +143,50 @@ class Handler(BaseHTTPRequestHandler):
                 "lambert_polygon": poly, "bbox": bbox,
                 "geojson": tiles_as_geojson(feats),
             })
+
+        if u.path == "/api/scene":
+            # Read a manifest so the render-prep panel can show what it is about
+            # to work on, and refuse a path that is not one.
+            sp = Path(body.get("scene", ""))
+            if not sp.is_file():
+                return self._send(404, {"error": f"not found: {sp}"})
+            try:
+                man = json.loads(sp.read_text(encoding="utf-8"))
+            except Exception as ex:
+                return self._send(400, {"error": f"unreadable: {ex}"})
+            if "variants" not in man or "origin" not in man:
+                return self._send(400, {"error": "not a scene manifest"})
+            tiles = Path(man.get("tiles_dir") or (sp.parent / "tiles"))
+            man["_tiles_present"] = tiles.is_dir()
+            man["_tiles_dir"] = str(tiles)
+            return self._send(200, man)
+
+        if u.path == "/api/prepare":
+            need = ("scene", "blend")
+            if any(not body.get(k) for k in need):
+                return self._send(400, {"error": f"need {need}"})
+            args = ["--scene", body["scene"], "--blend", body["blend"],
+                    "--cell", str(body.get("cell", 3.0))]
+            if body.get("voxel"):
+                args += ["--voxel", str(body["voxel"])]
+            else:
+                args += ["--target", str(int(body.get("target", 150_000_000)))]
+            if body.get("multiplier"):
+                args += ["--multiplier", str(body["multiplier"])]
+            if body.get("object"):
+                args += ["--object", body["object"]]
+            if body.get("out"):
+                args += ["--out", body["out"]]
+            if body.get("no_crop"):
+                args += ["--no-crop"]
+            if body.get("keep_volumes"):
+                args += ["--keep-volumes"]
+            jid = uuid.uuid4().hex[:12]
+            with JOBS_LOCK:
+                JOBS[jid] = {"id": jid, "state": "queued", "log": [], "args": args}
+            threading.Thread(target=run_job, args=(jid, args, "prepare_render.py"),
+                             daemon=True).start()
+            return self._send(200, {"job": jid})
 
         if u.path == "/api/acquire":
             need = ("name", "out", "ring")

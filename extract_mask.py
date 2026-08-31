@@ -29,7 +29,9 @@ def parse_args():
     argv = sys.argv
     argv = argv[argv.index("--") + 1:] if "--" in argv else []
     p = argparse.ArgumentParser()
-    p.add_argument("--object", required=True, help="Carved cloud object")
+    p.add_argument("--object", default=None,
+                   help="Carved cloud object. Omit to use the object tagged by "
+                        "the IGN LiDAR Tiler add-on")
     p.add_argument("--cell", type=float, default=3.0,
                    help="Mask cell size in metres (default 3.0)")
     p.add_argument("--origin", default=None,
@@ -40,10 +42,20 @@ def parse_args():
 
 def main():
     a = parse_args()
-    ob = bpy.data.objects.get(a.object)
-    if ob is None:
-        names = [o.name for o in bpy.data.objects if o.type in ("MESH", "POINTCLOUD")]
-        sys.exit(f"Object {a.object!r} not found. Candidates: {names}")
+    if a.object:
+        ob = bpy.data.objects.get(a.object)
+        if ob is None:
+            names = [o.name for o in bpy.data.objects if o.type in ("MESH", "POINTCLOUD")]
+            sys.exit(f"Object {a.object!r} not found. Candidates: {names}")
+    else:
+        tagged = [o for o in bpy.data.objects if o.get("ign_lidar_scene")]
+        if not tagged:
+            sys.exit("no object carries an ign_lidar_scene tag; pass --object, or "
+                     "tag the cloud with the IGN LiDAR Tiler add-on")
+        if len(tagged) > 1:
+            sys.exit(f"several tagged objects, pass --object: {[o.name for o in tagged]}")
+        ob = tagged[0]
+        print(f"[mask] using tagged object {ob.name!r}", flush=True)
 
     if ob.type == "MESH":
         n = len(ob.data.vertices)
@@ -89,7 +101,7 @@ def main():
         a.out,
         keys=keys, mn=mn, dims=dims, cell=np.float64(cell),
         origin=origin if origin is not None else np.array([np.nan] * 3),
-        object_name=np.array(a.object),
+        object_name=np.array(ob.name),
         matrix_world=np.array(ob.matrix_world),
         source_points=np.int64(n),
     )

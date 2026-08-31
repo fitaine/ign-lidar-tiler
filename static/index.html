@@ -55,8 +55,12 @@
   <div id="map"></div>
   <div id="side">
     <h1>IGN LiDAR Tiler</h1>
+    <div style="display:flex;padding:10px 16px 0;gap:8px">
+      <button id="m-acq" class="on" style="flex:1">1 · Acquire</button>
+      <button id="m-prep" style="flex:1">3 · Render prep</button>
+    </div>
 
-    <section>
+    <section class="acq">
       <h2>Base layer</h2>
       <div class="row">
         <button id="b-ortho" class="on">Ortho</button>
@@ -68,7 +72,7 @@
       </div>
     </section>
 
-    <section>
+    <section class="acq">
       <h2>Select</h2>
       <div class="row">
         <button id="b-rect" class="on">Rectangle</button>
@@ -80,7 +84,7 @@
       <div id="tiles"></div>
     </section>
 
-    <section>
+    <section class="acq">
       <h2>Scene</h2>
       <label for="name">Name</label>
       <input id="name" placeholder="mont-aiguille">
@@ -111,6 +115,46 @@
       <div class="hint">Off, whole 1 km tiles with a staircase edge. On costs
         nothing extra, the crop already runs.</div>
       <button class="go" id="go" disabled>Acquire scene</button>
+    </section>
+
+    <section class="prep" style="display:none">
+      <h2>Source scene</h2>
+      <label for="p-scene">scene.json</label>
+      <input id="p-scene" placeholder="…\scenes\mont-aiguille\scene.json">
+      <label for="p-blend">Lit, carved .blend</label>
+      <input id="p-blend" placeholder="…\mont-aiguille.blend">
+      <button id="p-load" style="width:100%;margin-top:10px">Load manifest</button>
+      <div id="p-info" style="margin-top:10px"></div>
+    </section>
+
+    <section class="prep" style="display:none">
+      <h2>Dense variant</h2>
+      <label for="p-target">Target (M points)</label>
+      <input id="p-target" type="number" value="150" min="1" step="5">
+      <div class="hint">VRAM is the limit, not time. 150M peaks at 10.2 GB of a
+        12 GB card and renders 900 tiles in about 58 h. 172M reaches 11.5 GB and
+        goes memory-bound.</div>
+      <label for="p-cell">Carve mask cell (m)</label>
+      <input id="p-cell" type="number" value="3.0" min="0.5" step="0.5">
+      <div class="hint">Must be well coarser than the sparse cloud's point
+        spacing, or the mask pits itself and drops points it should keep.</div>
+      <div class="check">
+        <input type="checkbox" id="p-nocrop">
+        <label for="p-nocrop" style="margin:0">Keep the whole footprint</label>
+      </div>
+      <div class="hint">Off, the dense cloud is cropped to what survived your
+        carving in Blender.</div>
+      <div class="check">
+        <input type="checkbox" id="p-vol">
+        <label for="p-vol" style="margin:0">Keep volumetrics</label>
+      </div>
+      <div class="hint warn" id="p-volwarn" style="display:none">Volumetrics
+        compete with the dense cloud for VRAM and dominate render time.</div>
+      <label for="p-out">Output .blend (optional)</label>
+      <input id="p-out" placeholder="auto: <name> - 150M-HEADLESS.blend">
+      <button class="go" id="p-go" disabled>Prepare render file</button>
+      <div class="hint">The result is for headless rendering only. Do not open
+        it in the GUI.</div>
     </section>
 
     <section id="jobsec" style="display:none">
@@ -209,6 +253,64 @@ function setMode(m){
     : 'Click to add points. Double-click, or click the first point, to close.';
 }
 document.getElementById('b-rect').onclick = () => setMode('rect');
+
+// ── mode switch ─────────────────────────────────────────────────────────────
+function setPanel(which){
+  document.querySelectorAll('.acq').forEach(e =>
+    e.style.display = which==='acq' ? '' : 'none');
+  document.querySelectorAll('.prep').forEach(e =>
+    e.style.display = which==='prep' ? '' : 'none');
+  document.getElementById('m-acq').classList.toggle('on', which==='acq');
+  document.getElementById('m-prep').classList.toggle('on', which==='prep');
+}
+document.getElementById('m-acq').onclick  = () => setPanel('acq');
+document.getElementById('m-prep').onclick = () => setPanel('prep');
+document.getElementById('p-vol').onchange = e =>
+  document.getElementById('p-volwarn').style.display = e.target.checked ? '' : 'none';
+
+// ── render prep ─────────────────────────────────────────────────────────────
+document.getElementById('p-load').onclick = async () => {
+  const info = document.getElementById('p-info');
+  const scene = document.getElementById('p-scene').value.trim();
+  if (!scene){ info.innerHTML = '<div class="warn">Give a scene.json path.</div>'; return; }
+  info.innerHTML = '<div class="hint">reading…</div>';
+  const r = await fetch('/api/scene', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({scene})});
+  const m = await r.json();
+  if (m.error){ info.innerHTML = `<div class="warn">${m.error}</div>`; return; }
+  const vs = (m.variants||[]).map(v =>
+    `<div class="stat"><span>${v.role} ${v.voxel}</span><span>${(v.points/1e6).toFixed(1)}M · r ${v.radius}</span></div>`).join('');
+  info.innerHTML =
+    `<div class="stat"><span>scene</span><span>${m.name}</span></div>` +
+    `<div class="stat"><span>tiles</span><span>${(m.tiles||[]).length}</span></div>` +
+    `<div class="stat"><span>raw points</span><span>${((m.raw_points||0)/1e6).toFixed(0)}M</span></div>` +
+    vs +
+    (m._tiles_present ? '' :
+      `<div class="warn" style="margin-top:8px">Tile archive missing at
+       ${m._tiles_dir} — the dense cloud is rebuilt from the raw tiles, so they
+       must still be on disk.</div>`);
+  document.getElementById('p-go').disabled = !m._tiles_present;
+};
+
+document.getElementById('p-go').onclick = async () => {
+  const body = {
+    scene: document.getElementById('p-scene').value.trim(),
+    blend: document.getElementById('p-blend').value.trim(),
+    target: Math.round(parseFloat(document.getElementById('p-target').value) * 1e6),
+    cell: parseFloat(document.getElementById('p-cell').value),
+    no_crop: document.getElementById('p-nocrop').checked,
+    keep_volumes: document.getElementById('p-vol').checked,
+    out: document.getElementById('p-out').value.trim()
+  };
+  if (!body.blend){ alert('The lit .blend is required.'); return; }
+  const r = await fetch('/api/prepare', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const d = await r.json();
+  if (d.error){ alert(d.error); return; }
+  document.getElementById('p-go').disabled = true;
+  document.getElementById('jobsec').style.display = 'block';
+  poll(d.job);
+};
 document.getElementById('b-poly').onclick = () => setMode('poly');
 document.getElementById('b-clear').onclick = () => {
   ring = null; polyPts = [];
@@ -316,11 +418,70 @@ async function poll(jid){
     log.textContent = (j.log || []).join('\n');
     log.scrollTop = log.scrollHeight;
     if (j.state === 'running' || j.state === 'queued') setTimeout(tick, 1200);
-    else document.getElementById('go').disabled = false;
+    else { document.getElementById('go').disabled = false;
+           document.getElementById('p-go').disabled = false; }
   };
   tick();
 }
 setMode('rect');
+
+// ── mode switch ─────────────────────────────────────────────────────────────
+function setPanel(which){
+  document.querySelectorAll('.acq').forEach(e =>
+    e.style.display = which==='acq' ? '' : 'none');
+  document.querySelectorAll('.prep').forEach(e =>
+    e.style.display = which==='prep' ? '' : 'none');
+  document.getElementById('m-acq').classList.toggle('on', which==='acq');
+  document.getElementById('m-prep').classList.toggle('on', which==='prep');
+}
+document.getElementById('m-acq').onclick  = () => setPanel('acq');
+document.getElementById('m-prep').onclick = () => setPanel('prep');
+document.getElementById('p-vol').onchange = e =>
+  document.getElementById('p-volwarn').style.display = e.target.checked ? '' : 'none';
+
+// ── render prep ─────────────────────────────────────────────────────────────
+document.getElementById('p-load').onclick = async () => {
+  const info = document.getElementById('p-info');
+  const scene = document.getElementById('p-scene').value.trim();
+  if (!scene){ info.innerHTML = '<div class="warn">Give a scene.json path.</div>'; return; }
+  info.innerHTML = '<div class="hint">reading…</div>';
+  const r = await fetch('/api/scene', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({scene})});
+  const m = await r.json();
+  if (m.error){ info.innerHTML = `<div class="warn">${m.error}</div>`; return; }
+  const vs = (m.variants||[]).map(v =>
+    `<div class="stat"><span>${v.role} ${v.voxel}</span><span>${(v.points/1e6).toFixed(1)}M · r ${v.radius}</span></div>`).join('');
+  info.innerHTML =
+    `<div class="stat"><span>scene</span><span>${m.name}</span></div>` +
+    `<div class="stat"><span>tiles</span><span>${(m.tiles||[]).length}</span></div>` +
+    `<div class="stat"><span>raw points</span><span>${((m.raw_points||0)/1e6).toFixed(0)}M</span></div>` +
+    vs +
+    (m._tiles_present ? '' :
+      `<div class="warn" style="margin-top:8px">Tile archive missing at
+       ${m._tiles_dir} — the dense cloud is rebuilt from the raw tiles, so they
+       must still be on disk.</div>`);
+  document.getElementById('p-go').disabled = !m._tiles_present;
+};
+
+document.getElementById('p-go').onclick = async () => {
+  const body = {
+    scene: document.getElementById('p-scene').value.trim(),
+    blend: document.getElementById('p-blend').value.trim(),
+    target: Math.round(parseFloat(document.getElementById('p-target').value) * 1e6),
+    cell: parseFloat(document.getElementById('p-cell').value),
+    no_crop: document.getElementById('p-nocrop').checked,
+    keep_volumes: document.getElementById('p-vol').checked,
+    out: document.getElementById('p-out').value.trim()
+  };
+  if (!body.blend){ alert('The lit .blend is required.'); return; }
+  const r = await fetch('/api/prepare', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const d = await r.json();
+  if (d.error){ alert(d.error); return; }
+  document.getElementById('p-go').disabled = true;
+  document.getElementById('jobsec').style.display = 'block';
+  poll(d.job);
+};
 </script>
 </body>
 </html>
