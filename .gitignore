@@ -51,5 +51,10 @@ settings.local.json
 Thumbs.db
 desktop.ini
 
-# icon preview, regenerate with make_icon.py
+# icon previews, regenerate with make_icon.py
 ign_lidar_tiler.png
+ign_lidar_tiler_stop.png
+
+# the windowless server writes here
+server.log
+server.pid
