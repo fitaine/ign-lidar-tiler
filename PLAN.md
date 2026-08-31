@@ -92,9 +92,17 @@ nothing in the app parses a filename for truth.
   repeat, at most two or three iterations, rather than trusting the formula.
 - Writes `scene.json`.
 
-Open item to verify at build time: the exact endpoint for the IGN LiDAR HD tile
-index and per-tile download URLs. It is published by IGN Geoplateforme but the
-URL scheme should be checked against the live service rather than assumed.
+**Tile index, resolved 2026-08-31.** The Geoplateforme WFS layer
+`IGNF_NUAGES-DE-POINTS-LIDAR-HD:dalle` at `https://data.geopf.fr/wfs/ows`.
+Each feature carries the 1 km footprint in Lambert 93 and a direct download
+URL. Verified by querying Mont Aiguille's footprint and getting back exactly
+the six tiles already on disk, 3.49 GB, matching the local total.
+
+**Voxel solving, resolved 2026-08-31.** Scale the probe by **area, not raw
+point count**: the downsample output counts occupied voxels, which follow the
+surface, while raw counts follow flight overlap (Mont Aiguille's tiles span
+2.4x in raw points but only 1.8x in occupied voxels). Scaling by raw counts
+missed by 27%; by area it lands within 1%.
 
 ## Stage 2, Blender (unchanged, plus a small add-on)
 
@@ -272,8 +280,11 @@ that already works.
 2. **3b** DONE. `make_render_blend.py`, radius applied, volumetrics stripped,
    verified by production tiles.
 3. **3c** DONE. See the production budget above; working maximum 150M.
-4. **1a** Tile index, map, selection, download, sparse PLY, `scene.json`.
-5. **1b** Crop-to-shape option, voxel solve-by-measurement.
+4. **1a** IN PROGRESS. `fetch_tiles.py` (tile index + download) and
+   `solve_voxel.py` (voxel solve by measurement) are done and verified.
+   Remaining: orchestration into a single acquire step that writes
+   `scene.json`, and the map UI.
+5. **1b** Crop-to-shape option.
 6. **2**  Blender add-on panel for tagging.
 7. **UI** Wrap stage 3 in the web app once the command line version is trusted.
 
