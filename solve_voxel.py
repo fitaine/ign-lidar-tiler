@@ -66,7 +66,11 @@ def main():
                    help="Fraction of the footprint that survives a carve. The "
                         "target is then reached AFTER cropping, not before.")
     p.add_argument("--probe-tiles", type=int, default=3,
-                   help="How many tiles to probe, spread across the density range (default 3)")
+                   help="How many tiles to fit the exponent on (default 3)")
+    p.add_argument("--scale-tiles", default="all",
+                   help="Tiles to measure the scene total on: 'all' (default, "
+                        "exact) or a number. Guessing this was the dominant error "
+                        "on scenes with varied terrain.")
     p.add_argument("--multiplier", type=float, default=1.0,
                    help="Ball radius multiplier, 1.0 = spheres touch")
     a = p.parse_args()
@@ -94,35 +98,62 @@ def main():
     print(f"probing {len(picks)} tile(s), scaling by area:", flush=True)
 
     v1, v2 = (float(v) for v in a.probe.split(","))
-    n1 = n2 = 0
     with tempfile.TemporaryDirectory() as wd:
+        # The EXPONENT only needs a local fit, so a couple of tiles will do.
+        n1 = n2 = 0
         for t, raw in picks:
             c1 = count_after_downsample(t, v1, wd)
             c2 = count_after_downsample(t, v2, wd)
             n1 += c1
             n2 += c2
             print(f"  {t.name}  raw {raw:,}  v{v1}: {c1:,}  v{v2}: {c2:,}", flush=True)
+        if n1 == n2:
+            sys.exit("the two probes gave the same count; use sizes further apart")
+        exponent = log(n1 / n2) / log(v2 / v1)
 
-    if n1 == n2:
-        sys.exit("the two probes gave the same count; pick probe sizes further apart")
-    exponent = log(n1 / n2) / log(v2 / v1)
-    scale = len(tiles) / float(len(picks))
-    # points(scene, v) = n1 * scale * (v1 / v) ** exponent
+        # The SCALE is different: multiplying a few tiles up to the whole scene
+        # assumes they represent it. On Mont Aiguille's six similar tiles that
+        # landed within 0.7%; on La Plagne's sixteen, across 1400 m of relief,
+        # it missed by 18% one way and 14% the other on the same scene.
+        # Measuring every tile once at the coarse size costs minutes and
+        # removes the assumption.
+        if str(a.scale_tiles).lower() == "all":
+            scale_set = [t for t, _ in counts]
+        else:
+            k2 = max(1, min(int(a.scale_tiles), len(counts)))
+            step2 = (len(counts) - 1) / max(k2 - 1, 1)
+            scale_set = [counts[round(i * step2)][0] for i in range(k2)]
+        print(f"\nmeasuring the scene total on {len(scale_set)} tile(s) "
+              f"at voxel {v2}:", flush=True)
+        measured = 0
+        for i, t in enumerate(scale_set, 1):
+            c = count_after_downsample(t, v2, wd)
+            measured += c
+            print(f"  [{i}/{len(scale_set)}] {t.name}: {c:,}", flush=True)
+
+    exact = len(scale_set) == len(tiles)
+    scene_at_v2 = measured * (len(tiles) / float(len(scale_set)))
+
     effective_target = a.target / max(a.coverage, 1e-6)
     if a.coverage < 1.0:
         print(f"carve keeps {100*a.coverage:.1f}% of the footprint, so solving "
               f"for {effective_target:,.0f} points before cropping", flush=True)
-    target_v = v1 * (n1 * scale / effective_target) ** (1.0 / exponent)
+    target_v = v2 * (scene_at_v2 / effective_target) ** (1.0 / exponent)
     radius = target_v / 2.0 * a.multiplier
 
     print(f"\nfitted points proportional to voxel^-{exponent:.3f}", flush=True)
-    print(f"scene is {scale:.2f}x the probed area", flush=True)
+    print(f"scene at voxel {v2}: {scene_at_v2:,.0f} points "
+          f"({'measured on every tile' if exact else 'estimated from a sample'})",
+          flush=True)
     print(f"\nfor {a.target:,} points:")
     print(f"  --voxel {target_v:.3f}")
     print(f"  radius {radius:.4f}   (suffix -{round(radius*100):03d})")
-    est = n1 * scale * (v1 / target_v) ** exponent
+    est = scene_at_v2 * (v2 / target_v) ** exponent
     print(f"  predicted {est:,.0f} points before cropping, "
           f"{est*a.coverage:,.0f} after, about {est*a.coverage*15/1e9:.2f} GB as a PLY")
+    if not exact:
+        print("  NOTE the scale came from a sample; on varied terrain that has "
+              "missed by 15% or more. Use --scale-tiles all to measure it.")
     if not (0.05 <= target_v <= 5.0):
         print("\nWARNING that voxel is outside the sane range; check the target")
 
