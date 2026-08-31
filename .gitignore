@@ -50,3 +50,6 @@ settings.local.json
 *.swp
 Thumbs.db
 desktop.ini
+
+# icon preview, regenerate with make_icon.py
+ign_lidar_tiler.png
