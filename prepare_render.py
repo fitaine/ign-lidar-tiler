@@ -225,8 +225,21 @@ def main():
             "cropping to the carve mask")
         final = cropped
 
+    # Name the file after what it actually holds, not what was asked for. The
+    # solver is a fit, so a 150M request can land at 172M, and a file called
+    # "150M" holding 172M is a lie you would only catch after a render — and
+    # those two numbers sit on opposite sides of what a 12 GB card handles.
+    with open(final, "rb") as f:
+        head = f.read(4096).decode("ascii", errors="replace")
+    n_pts = next(int(l.split()[-1]) for l in head.splitlines()
+                 if l.startswith("element vertex"))
+    if abs(n_pts - target) > 0.05 * target:
+        print(f"[prep] NOTE asked for {target:,} points, built {n_pts:,} "
+              f"({100*(n_pts-target)/target:+.1f}%). Naming the file after the "
+              f"real count.", flush=True)
+
     out_blend = Path(a.out) if a.out else blend.with_name(
-        f"{blend.stem} - {round(target/1e6)}M-HEADLESS.blend")
+        f"{blend.stem} - {round(n_pts/1e6)}M-HEADLESS.blend")
     cmd = [blender, "-b", blend, "--python", HERE / "make_render_blend.py", "--",
            "--ply", final, "--radius", radius, "--out", out_blend]
     if a.object:
@@ -238,10 +251,6 @@ def main():
     run(cmd, "writing the render .blend")
 
     # ── record it ────────────────────────────────────────────────────────────
-    with open(final, "rb") as f:
-        head = f.read(4096).decode("ascii", errors="replace")
-    n_pts = next(int(l.split()[-1]) for l in head.splitlines()
-                 if l.startswith("element vertex"))
     man.setdefault("variants", [])
     man["variants"] = [v for v in man["variants"] if v.get("file") != final.name]
     man["variants"].append({"role": "dense", "file": final.name, "voxel": voxel,
