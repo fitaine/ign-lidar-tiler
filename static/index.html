@@ -70,6 +70,7 @@
         <input type="checkbox" id="showgrid" checked>
         <label for="showgrid" style="margin:0">Show the LiDAR tile grid</label>
       </div>
+      <div class="hint" id="gridstat"></div>
     </section>
 
     <section class="acq">
@@ -167,6 +168,15 @@
   </div>
 </div>
 <script>
+// Grid state is declared up here, ahead of the map and its load handler.
+// It used to sit below them, and because `let`/`const` are in a temporal dead
+// zone until their declaration runs, the load handler's refreshGrid() call
+// threw a silent ReferenceError and the grid never drew on first load.
+let gridTimer = null, gridSeq = 0;
+const gridCache = new Map();          // tile name -> GeoJSON feature
+const GRID_MIN_ZOOM = 10;
+const GRID_MAX_CACHE = 6000;
+
 // ── map ─────────────────────────────────────────────────────────────────────
 const WMTS = (layer, fmt) =>
   `https://data.geopf.fr/wmts?SERVICE=WMTS&VERSION=1.0.0&REQUEST=GetTile` +
@@ -225,7 +235,11 @@ new ResizeObserver(() => map.resize()).observe(document.getElementById('map'));
 })();
 
 const empty = {type:'FeatureCollection', features:[]};
-map.on('load', () => {
+// 'style.load', not 'load': 'load' waits for the first tiles to finish
+// rendering, which never happens while the window is hidden or the tile
+// server is slow. Sources and layers would then never be created and the grid
+// stayed permanently empty.
+map.on('style.load', () => {
   map.addSource('grid', {type:'geojson', data:empty});
   map.addLayer({id:'grid-line', type:'line', source:'grid',
     paint:{'line-color':'#7fd1c1','line-width':0.7,'line-opacity':0.55}});
@@ -242,23 +256,68 @@ map.on('load', () => {
   refreshGrid();
 });
 map.on('moveend', refreshGrid);
+map.once('idle', refreshGrid);   // safety net for the first draw
 
 // ── tile grid ───────────────────────────────────────────────────────────────
-let gridTimer = null;
+// The grid used to blink out constantly. Three reasons, all fixed here:
+//   * every pan replaced the whole layer, so it was empty until the WFS
+//     answered, which can take seconds;
+//   * responses could land out of order, letting an older viewport overwrite
+//     a newer one;
+//   * the server refused any view wider than 4000 km², which an ordinary
+//     window hits at zoom 11.
+// Tiles are now cached by name and merged, so panning adds to the grid rather
+// than resetting it, and late answers for a stale viewport are dropped.
+function gridStatus(msg){
+  const el = document.getElementById('gridstat');
+  if (el) el.textContent = msg || '';
+}
+
+function paintGrid(){
+  const src = map.getSource('grid');
+  if (!src) return;
+  src.setData({type:'FeatureCollection', features:[...gridCache.values()]});
+}
+
 function refreshGrid(){
-  const src = () => map.getSource('grid');
-  if (!src()) return;                            // style not ready yet
-  if (!document.getElementById('showgrid').checked || map.getZoom() < 11){
-    src().setData(empty); return;                // meaningless zoomed out
+  try { refreshGridInner(); }
+  catch (e) { gridStatus('grid error: ' + e.message); console.error(e); }
+}
+function refreshGridInner(){
+  if (!map.getSource('grid')) return;              // style not ready yet
+  if (!document.getElementById('showgrid').checked){
+    gridCache.clear(); paintGrid(); gridStatus(''); return;
+  }
+  if (map.getZoom() < GRID_MIN_ZOOM){
+    gridStatus('zoom in to see the tile grid');
+    return;                                        // keep what is drawn
   }
   clearTimeout(gridTimer);
   gridTimer = setTimeout(async () => {
+    const seq = ++gridSeq;
     const b = map.getBounds();
-    const r = await fetch(`/api/tiles?w=${b.getWest()}&s=${b.getSouth()}` +
-                          `&e=${b.getEast()}&n=${b.getNorth()}`);
-    const gj = await r.json();
-    if (gj.features && src()) src().setData(gj);
-  }, 250);
+    gridStatus('loading tiles…');
+    let gj;
+    try {
+      const r = await fetch(`/api/tiles?w=${b.getWest()}&s=${b.getSouth()}` +
+                            `&e=${b.getEast()}&n=${b.getNorth()}`);
+      gj = await r.json();
+    } catch (e) {
+      if (seq === gridSeq) gridStatus('tile index unreachable');
+      return;
+    }
+    if (seq !== gridSeq) return;                   // a newer request has started
+    if (gj.note){ gridStatus(gj.note); return; }
+    if (gj.error){ gridStatus(gj.error); return; }
+    for (const f of (gj.features || [])) gridCache.set(f.properties.name, f);
+    if (gridCache.size > GRID_MAX_CACHE){          // drop what is far away
+      const keep = [...gridCache.entries()].slice(-GRID_MAX_CACHE);
+      gridCache.clear();
+      for (const [k, v] of keep) gridCache.set(k, v);
+    }
+    paintGrid();
+    gridStatus(`${gridCache.size} tiles in the grid`);
+  }, 200);
 }
 document.getElementById('showgrid').onchange = refreshGrid;
 

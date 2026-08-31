@@ -98,9 +98,13 @@ class Handler(BaseHTTPRequestHandler):
             xs, ys = zip(to_lambert(w, s), to_lambert(e, s),
                          to_lambert(w, n), to_lambert(e, n))
             bbox = (min(xs), min(ys), max(xs), max(ys))
-            if (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) > 4e9:
+            # 4000 km2 was too tight: an ordinary window at zoom 11 exceeds it,
+            # so the grid vanished at zooms where it is still useful.
+            area_km2 = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) / 1e6
+            if area_km2 > 20000:
                 return self._send(200, {"type": "FeatureCollection", "features": [],
-                                        "note": "zoom in to load the tile grid"})
+                                        "note": f"{area_km2:,.0f} km² in view, "
+                                                f"too wide for the tile grid"})
             try:
                 feats = fetch_tiles.list_tiles(bbox)
             except Exception as ex:
