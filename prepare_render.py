@@ -112,6 +112,7 @@ def main():
         sys.exit(f"tile archive not found: {tiles_dir}\n"
                  f"       (scene.json's tiles_dir, or <scene folder>/tiles)")
     raster = folder / man["raster"] if man.get("raster") else None
+    origin_xyz = [float(v) for v in man["origin"]]
     origin = ",".join(str(v) for v in man["origin"])
     mult = a.multiplier if a.multiplier is not None else man.get("radius_multiplier", 1.0)
     target = a.target or 150_000_000
@@ -124,23 +125,6 @@ def main():
     print(f"[prep] origin  : {origin}", flush=True)
     print(f"[prep] blender : {blender}", flush=True)
 
-    # ── 1. voxel ─────────────────────────────────────────────────────────────
-    if a.voxel:
-        voxel = a.voxel
-        print(f"[prep] voxel {voxel} (given)", flush=True)
-    else:
-        out = run_capture([sys.executable, HERE / "solve_voxel.py",
-                           "--tiles", tiles_dir, "--target", target,
-                           "--multiplier", mult],
-                          f"solving the voxel for {target:,} points")
-        voxel = None
-        for line in out.splitlines():
-            if line.strip().startswith("--voxel"):
-                voxel = float(line.split()[-1])
-        if voxel is None:
-            sys.exit("[prep] could not parse a voxel from solve_voxel")
-    radius = voxel / 2.0 * mult
-
     # ── 2. carve mask ────────────────────────────────────────────────────────
     mask = folder / f"{name}-carve-mask.npz"
     if not a.no_crop:
@@ -150,13 +134,79 @@ def main():
             cmd += ["--object", a.object]
         run(cmd, "exporting the carve mask")
 
-    # ── 3. dense PLY ─────────────────────────────────────────────────────────
+    # What survived the carve decides two things: how fine the voxel has to be
+    # to hit the target AFTER cropping, and which tiles are worth touching at
+    # all. On a 16 km2 footprint carved to 2 km2, ignoring this both misses the
+    # target eightfold and does eight times more work than needed.
+    coverage, mask_bbox = 1.0, None
+    if not a.no_crop:
+        import numpy as np
+        m = np.load(mask, allow_pickle=True)
+        keys, mn, dims, mcell = m["keys"], m["mn"], m["dims"], float(m["cell"])
+        ix = keys // (dims[1] * dims[2])
+        iy = (keys // dims[2]) % dims[1]
+        planim = np.unique(ix * dims[1] + iy)
+        # Coverage must be measured against the area solve_voxel scales by,
+        # which is the whole tile footprint, not the carved cloud's own
+        # bounding box. Those are the same thing only when the cloud fills its
+        # footprint, which is exactly what an extended scene does not do.
+        kept_m2 = float(planim.size) * mcell * mcell
+        scene_m2 = max(len(man.get("tiles", [])), 1) * 1e6
+        coverage = min(1.0, kept_m2 / scene_m2)
+        # absolute bbox of what was kept, with a cell of slack
+        gx0, gx1 = int(ix.min()), int(ix.max()) + 1
+        gy0, gy1 = int(iy.min()), int(iy.max()) + 1
+        mask_bbox = (origin_xyz[0] + mn[0] + (gx0 - 1) * mcell,
+                     origin_xyz[1] + mn[1] + (gy0 - 1) * mcell,
+                     origin_xyz[0] + mn[0] + (gx1 + 1) * mcell,
+                     origin_xyz[1] + mn[1] + (gy1 + 1) * mcell)
+        area = (mask_bbox[2] - mask_bbox[0]) * (mask_bbox[3] - mask_bbox[1]) / 1e6
+        print(f"[prep] carve keeps {kept_m2/1e6:.2f} km2 of a "
+              f"{scene_m2/1e6:.0f} km2 footprint ({100*coverage:.1f}%), "
+              f"bounding {area:.2f} km2", flush=True)
+
+    # ── voxel, now that the carve is known ───────────────────────────────────
+    if a.voxel:
+        voxel = a.voxel
+        print(f"[prep] voxel {voxel} (given)", flush=True)
+    else:
+        cmd = [sys.executable, HERE / "solve_voxel.py",
+               "--tiles", tiles_dir, "--target", target, "--multiplier", mult,
+               "--coverage", f"{coverage:.6f}"]
+        out = run_capture(cmd, f"solving the voxel for {target:,} points")
+        voxel = None
+        for line in out.splitlines():
+            if line.strip().startswith("--voxel"):
+                voxel = float(line.split()[-1])
+        if voxel is None:
+            sys.exit("[prep] could not parse a voxel from solve_voxel")
+    radius = voxel / 2.0 * mult
+
+    # The carved area caps how many points can exist at all. Asking for more
+    # than the source holds over that area silently produces a cloud far below
+    # the target, so say it instead.
+    raw = man.get("raw_points")
+    if raw and not a.no_crop and coverage < 1.0:
+        density = raw / scene_m2                      # raw returns per m2
+        ceiling = kept_m2 * density * 0.6             # unique voxels, not returns
+        native_spacing = (1.0 / density) ** 0.5
+        if voxel < native_spacing:
+            print(f"[prep] NOTE the solved voxel {voxel:.3f} m is finer than the "
+                  f"source spacing {native_spacing:.3f} m, so the target is not "
+                  f"reachable over this carve.", flush=True)
+            print(f"[prep]      {kept_m2/1e6:.2f} km2 at {density:.0f} returns/m2 "
+                  f"holds roughly {ceiling/1e6:.0f}M points at most. Carve a "
+                  f"larger area, or lower the target.", flush=True)
+
+    # ── dense PLY ────────────────────────────────────────────────────────────
     dense_name = f"{name}-dense"
     cmd = [sys.executable, HERE / "densify_tiled.py",
            "--tiles", tiles_dir, "--voxel", voxel, "--origin", origin,
            "--multiplier", mult, "--name", dense_name, "--out", folder]
     if raster and raster.is_file():
         cmd += ["--raster", raster]
+    if mask_bbox:
+        cmd += ["--bbox", ",".join(f"{v:.2f}" for v in mask_bbox)]
     run(cmd, f"building the dense cloud at voxel {voxel:.3f}")
 
     suffix = f"{round(radius * 100):03d}"

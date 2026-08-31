@@ -108,6 +108,11 @@ def main():
     p.add_argument("--multiplier", type=float, default=1.0)
     p.add_argument("--name", required=True)
     p.add_argument("--out", required=True)
+    p.add_argument("--bbox", default=None,
+                   help="minx,miny,maxx,maxy in Lambert 93. Tiles that do not "
+                        "intersect it are skipped entirely, and the output is "
+                        "cropped to it. Use this when only part of a large "
+                        "footprint survives a carve.")
     p.add_argument("--polygon", default=None,
                    help="GeoJSON Polygon file (Lambert 93) to crop to, instead of "
                         "keeping whole tiles with a staircase edge")
@@ -119,6 +124,26 @@ def main():
     tiles = sorted(tiles_dir.glob("*.copc.laz"))
     if not tiles:
         sys.exit(f"no .copc.laz in {tiles_dir}")
+
+    keep_bbox = None
+    if a.bbox:
+        keep_bbox = tuple(float(v) for v in a.bbox.split(","))
+        if len(keep_bbox) != 4:
+            sys.exit("--bbox needs minx,miny,maxx,maxy")
+        kept = []
+        for t in tiles:
+            r = subprocess.run([PDAL_EXE, "info", "--summary", str(t)],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                continue
+            b = json.loads(r.stdout)["summary"]["bounds"]
+            if (b["maxx"] >= keep_bbox[0] and b["minx"] <= keep_bbox[2]
+                    and b["maxy"] >= keep_bbox[1] and b["miny"] <= keep_bbox[3]):
+                kept.append(t)
+        print(f"bbox filter: {len(tiles)} -> {len(kept)} tiles", flush=True)
+        if not kept:
+            sys.exit("no tile intersects --bbox")
+        tiles = kept
     if a.raster and not Path(a.raster).is_file():
         sys.exit(f"--raster not found: {a.raster}")
 
@@ -143,6 +168,9 @@ def main():
         b = json.loads(r.stdout)["summary"]["bounds"]
         minx = min(minx, b["minx"]); maxx = max(maxx, b["maxx"])
         miny = min(miny, b["miny"]); maxy = max(maxy, b["maxy"])
+    if keep_bbox:
+        minx, miny = max(minx, keep_bbox[0]), max(miny, keep_bbox[1])
+        maxx, maxy = min(maxx, keep_bbox[2]), min(maxy, keep_bbox[3])
     bounds = (minx, miny, maxx, maxy)
 
     print(f"{len(tiles)} tiles, voxel {a.voxel}, radius {radius:.4f}", flush=True)

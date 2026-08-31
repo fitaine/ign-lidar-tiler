@@ -62,6 +62,9 @@ def main():
     p.add_argument("--target", type=int, required=True, help="Target point count")
     p.add_argument("--probe", default="0.60,1.00",
                    help="Two voxel sizes to measure with (default 0.60,1.00)")
+    p.add_argument("--coverage", type=float, default=1.0,
+                   help="Fraction of the footprint that survives a carve. The "
+                        "target is then reached AFTER cropping, not before.")
     p.add_argument("--probe-tiles", type=int, default=3,
                    help="How many tiles to probe, spread across the density range (default 3)")
     p.add_argument("--multiplier", type=float, default=1.0,
@@ -105,7 +108,11 @@ def main():
     exponent = log(n1 / n2) / log(v2 / v1)
     scale = len(tiles) / float(len(picks))
     # points(scene, v) = n1 * scale * (v1 / v) ** exponent
-    target_v = v1 * (n1 * scale / a.target) ** (1.0 / exponent)
+    effective_target = a.target / max(a.coverage, 1e-6)
+    if a.coverage < 1.0:
+        print(f"carve keeps {100*a.coverage:.1f}% of the footprint, so solving "
+              f"for {effective_target:,.0f} points before cropping", flush=True)
+    target_v = v1 * (n1 * scale / effective_target) ** (1.0 / exponent)
     radius = target_v / 2.0 * a.multiplier
 
     print(f"\nfitted points proportional to voxel^-{exponent:.3f}", flush=True)
@@ -114,7 +121,8 @@ def main():
     print(f"  --voxel {target_v:.3f}")
     print(f"  radius {radius:.4f}   (suffix -{round(radius*100):03d})")
     est = n1 * scale * (v1 / target_v) ** exponent
-    print(f"  predicted {est:,.0f} points, about {est*15/1e9:.2f} GB as a PLY")
+    print(f"  predicted {est:,.0f} points before cropping, "
+          f"{est*a.coverage:,.0f} after, about {est*a.coverage*15/1e9:.2f} GB as a PLY")
     if not (0.05 <= target_v <= 5.0):
         print("\nWARNING that voxel is outside the sane range; check the target")
 
