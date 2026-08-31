@@ -20,7 +20,7 @@ import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import fetch_tiles
 from lambert93 import to_lambert, to_wgs84
@@ -31,6 +31,52 @@ PORT = 8765
 
 JOBS = {}
 JOBS_LOCK = threading.Lock()
+
+
+def clean_path(raw):
+    """Windows paths arrive mangled in several ways.
+
+    'Copy as path' wraps them in quotes; copying from a file:// URL or from
+    some apps percent-encodes the spaces. Both produce a path that does not
+    exist, with a confusing error. Normalise before touching the disk.
+    """
+    if raw is None:
+        return None
+    p = str(raw).strip().strip('"').strip("'")
+    if p.lower().startswith("file:///"):
+        p = p[8:]
+    if "%" in p:
+        p = unquote(p)
+    return p.replace("/", "\\") if ":" in p[:3] else p
+
+
+def list_dir(path):
+    """Directory listing for the file browser."""
+    if not path:
+        drives = []
+        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+            d = Path(f"{letter}:\\")
+            if d.exists():
+                drives.append(str(d))
+        return {"path": "", "parent": None, "dirs": drives, "files": []}
+    p = Path(path)
+    if not p.is_dir():
+        p = p.parent
+    dirs, files = [], []
+    try:
+        for e in sorted(p.iterdir(), key=lambda x: x.name.lower()):
+            try:
+                if e.is_dir():
+                    dirs.append(e.name)
+                else:
+                    files.append({"name": e.name, "size": e.stat().st_size})
+            except OSError:
+                continue
+    except PermissionError:
+        return {"path": str(p), "parent": str(p.parent), "dirs": [], "files": [],
+                "error": "permission denied"}
+    parent = str(p.parent) if p.parent != p else ""
+    return {"path": str(p), "parent": parent, "dirs": dirs, "files": files}
 
 
 def tiles_as_geojson(feats):
@@ -110,6 +156,21 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as ex:
                 return self._send(502, {"error": f"IGN WFS: {ex}"})
             return self._send(200, tiles_as_geojson(feats))
+        if u.path == "/api/browse":
+            q = parse_qs(u.query)
+            path = clean_path(q.get("path", [""])[0])
+            exts = [e.lower() for e in q.get("ext", [""])[0].split(",") if e]
+            try:
+                d = list_dir(path)
+            except Exception as ex:
+                return self._send(200, {"path": path or "", "parent": "",
+                                        "dirs": [], "files": [],
+                                        "error": str(ex)})
+            if exts:
+                d["files"] = [f for f in d["files"]
+                              if any(f["name"].lower().endswith(e) for e in exts)]
+            return self._send(200, d)
+
         if u.path.startswith("/api/job/"):
             jid = u.path.rsplit("/", 1)[-1]
             with JOBS_LOCK:
@@ -151,7 +212,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/scene":
             # Read a manifest so the render-prep panel can show what it is about
             # to work on, and refuse a path that is not one.
-            sp = Path(body.get("scene", ""))
+            sp = Path(clean_path(body.get("scene", "")) or "")
             if not sp.is_file():
                 return self._send(404, {"error": f"not found: {sp}"})
             try:
@@ -169,7 +230,8 @@ class Handler(BaseHTTPRequestHandler):
             need = ("scene", "blend")
             if any(not body.get(k) for k in need):
                 return self._send(400, {"error": f"need {need}"})
-            args = ["--scene", body["scene"], "--blend", body["blend"],
+            args = ["--scene", clean_path(body["scene"]),
+                    "--blend", clean_path(body["blend"]),
                     "--cell", str(body.get("cell", 3.0))]
             if body.get("voxel"):
                 args += ["--voxel", str(body["voxel"])]
@@ -180,7 +242,7 @@ class Handler(BaseHTTPRequestHandler):
             if body.get("object"):
                 args += ["--object", body["object"]]
             if body.get("out"):
-                args += ["--out", body["out"]]
+                args += ["--out", clean_path(body["out"])]
             if body.get("no_crop"):
                 args += ["--no-crop"]
             if body.get("keep_volumes"):
@@ -200,7 +262,7 @@ class Handler(BaseHTTPRequestHandler):
             gj = HERE / "_selection.geojson"
             gj.write_text(json.dumps({"type": "Polygon", "coordinates": [ring]}),
                           encoding="utf-8")
-            args = ["--name", body["name"], "--out", body["out"],
+            args = ["--name", body["name"], "--out", clean_path(body["out"]),
                     "--geojson", str(gj),
                     "--target", str(int(body.get("target", 40_000_000))),
                     "--raster-res", str(body.get("raster_res", 0.20)),

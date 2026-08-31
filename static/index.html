@@ -18,8 +18,11 @@
      the chain collapsed to 0 and the map never initialised. */
   #app{position:fixed;inset:0;display:flex}
   #map{flex:1;min-width:0}
-  #side{width:340px;background:var(--panel);border-left:1px solid var(--line);
-    display:flex;flex-direction:column;overflow-y:auto}
+  #side{width:340px;min-width:340px;background:var(--panel);
+    border-left:1px solid var(--line);display:flex;flex-direction:column;
+    overflow-y:auto;overflow-x:hidden}
+  /* Long Windows paths and tile names used to push the panel sideways. */
+  #side *{max-width:100%}
   h1{font-size:14px;margin:0;padding:14px 16px;border-bottom:1px solid var(--line);
     letter-spacing:.02em}
   section{padding:14px 16px;border-bottom:1px solid var(--line)}
@@ -39,12 +42,27 @@
   button:disabled{opacity:.45;cursor:not-allowed}
   .check{display:flex;align-items:center;gap:8px;margin-top:10px}
   .check input{width:auto}
-  .stat{display:flex;justify-content:space-between;padding:3px 0}
-  .stat span:last-child{color:var(--accent);font-variant-numeric:tabular-nums}
+  .stat{display:flex;justify-content:space-between;gap:10px;padding:3px 0}
+  .stat span:first-child{flex:0 0 auto}
+  .stat span:last-child{color:var(--accent);font-variant-numeric:tabular-nums;
+    text-align:right;overflow-wrap:anywhere;min-width:0}
   .hint{color:var(--muted);font-size:11.5px;margin-top:8px}
   .warn{color:var(--warn)}
-  #tiles{max-height:150px;overflow-y:auto;margin-top:8px;font-size:11px;
-    color:var(--muted);font-variant-numeric:tabular-nums}
+  #tiles{max-height:150px;overflow-y:auto;overflow-x:hidden;margin-top:8px;
+    font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;
+    overflow-wrap:anywhere}
+  .hint,#p-info,.warn{overflow-wrap:anywhere}
+  #log{overflow-x:auto}
+  #fb{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;
+    align-items:center;justify-content:center;z-index:50}
+  #fbbox{background:var(--panel);border:1px solid var(--line);border-radius:6px;
+    width:min(720px,92vw);max-height:80vh;display:flex;flex-direction:column}
+  #fbhead{padding:12px 14px;border-bottom:1px solid var(--line);
+    font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+  #fblist{overflow-y:auto;padding:6px 0}
+  #fblist div{padding:6px 14px;cursor:pointer;font-size:12.5px}
+  #fblist div:hover{background:#2a303c}
+  #fbfoot{padding:10px 14px;border-top:1px solid var(--line);text-align:right}
   #log{font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;
     white-space:pre-wrap;background:#0f1116;border:1px solid var(--line);
     border-radius:4px;padding:8px;max-height:220px;overflow-y:auto;color:#b9c1cf}
@@ -93,7 +111,8 @@
       <label for="name">Name</label>
       <input id="name" placeholder="mont-aiguille">
       <label for="out">Output folder</label>
-      <input id="out" placeholder="C:\Users\Tiphaine\Pictures\3D\scenes\mont-aiguille">
+      <div class="row"><input id="out" placeholder="output folder">
+        <button style="flex:0 0 auto" data-browse="out" data-dirs="1">Browse</button></div>
       <div class="row">
         <div>
           <label for="target">Sparse target (M points)</label>
@@ -124,9 +143,11 @@
     <section class="prep" style="display:none">
       <h2>Source scene</h2>
       <label for="p-scene">scene.json</label>
-      <input id="p-scene" placeholder="…\scenes\mont-aiguille\scene.json">
+      <div class="row"><input id="p-scene" placeholder="scene.json">
+        <button style="flex:0 0 auto" data-browse="p-scene" data-ext=".json">Browse</button></div>
       <label for="p-blend">Lit, carved .blend</label>
-      <input id="p-blend" placeholder="…\mont-aiguille.blend">
+      <div class="row"><input id="p-blend" placeholder="the .blend you lit">
+        <button style="flex:0 0 auto" data-browse="p-blend" data-ext=".blend">Browse</button></div>
       <button id="p-load" style="width:100%;margin-top:10px">Load manifest</button>
       <div id="p-info" style="margin-top:10px"></div>
     </section>
@@ -167,6 +188,15 @@
     </section>
   </div>
 </div>
+
+<div id="fb"><div id="fbbox">
+  <div id="fbhead"></div>
+  <div id="fblist"></div>
+  <div id="fbfoot">
+    <button id="fbpick" style="display:none">Use this folder</button>
+    <button id="fbclose">Cancel</button>
+  </div>
+</div></div>
 <script>
 // Grid state is declared up here, ahead of the map and its load handler.
 // It used to sit below them, and because `let`/`const` are in a temporal dead
@@ -332,18 +362,18 @@ document.getElementById('b-ortho').onclick = () => base('ortho');
 document.getElementById('b-plan').onclick  = () => base('plan');
 
 // ── drawing ─────────────────────────────────────────────────────────────────
-let mode = 'nav', ring = null, dragStart = null, polyPts = [];
+let mode = 'nav', ring = null, dragStart = null, polyPts = [], lasso = false;
 const hint = document.getElementById('drawhint');
 
 function setMode(m){
-  mode = m; polyPts = []; dragStart = null;
+  mode = m; polyPts = []; dragStart = null; lasso = false;
   for (const pair of [['b-nav','nav'],['b-rect','rect'],['b-poly','poly']])
     document.getElementById(pair[0]).classList.toggle('on', m===pair[1]);
   map.dragPan.enable();
   hint.textContent =
     m==='nav'  ? 'Drag to move the map. Right-drag pans in any mode.' :
     m==='rect' ? 'Left-drag to draw a rectangle. Right-drag to pan.' :
-                 'Left-click to add points, double-click or click the first point to close. Right-drag to pan.';
+                 'Drag to draw a free shape, or click point by point. Right-drag to pan.';
 }
 document.getElementById('b-nav').onclick  = () => setMode('nav');
 document.getElementById('b-rect').onclick = () => setMode('rect');
@@ -386,8 +416,8 @@ map.on('mouseup', e => {
   select();
 });
 map.on('click', e => {
-  if (mode !== 'poly' || !isLeft(e)) return;
-  const p = [e.lngLat.lng, e.lngLat.lat];
+  if (mode !== 'poly' || !isLeft(e) || lasso) return;
+  const p = [e.lngLat.lng, e.lngLat.lat];          // click-by-click still works
   if (polyPts.length > 2){
     const first = map.project(polyPts[0]), now = map.project(p);
     if (Math.hypot(first.x-now.x, first.y-now.y) < 12){ closePoly(); return; }
@@ -397,6 +427,31 @@ map.on('click', e => {
 });
 map.on('dblclick', e => { if (mode === 'poly' && polyPts.length > 2){
   e.preventDefault(); closePoly(); } });
+
+// Dragging in free-shape mode draws a freehand outline. Clicking vertex by
+// vertex still works, but dragging used to just pan the map, which made the
+// mode look broken.
+map.on('mousedown', e => {
+  if (mode !== 'poly' || !isLeft(e)) return;
+  lasso = true; polyPts = [[e.lngLat.lng, e.lngLat.lat]];
+  map.dragPan.disable();
+});
+map.on('mousemove', e => {
+  if (!lasso) return;
+  const p = [e.lngLat.lng, e.lngLat.lat];
+  const last = polyPts[polyPts.length - 1];
+  const a = map.project(last), b = map.project(p);
+  if (Math.hypot(a.x-b.x, a.y-b.y) < 4) return;   // thin out the trail
+  polyPts.push(p);
+  drawRing(polyPts, polyPts.length > 2);
+});
+map.on('mouseup', e => {
+  if (!lasso) return;
+  lasso = false; map.dragPan.enable();
+  if (polyPts.length < 3){ polyPts = []; return; }  // a click, not a drag
+  closePoly();
+});
+
 function closePoly(){
   if (polyPts.length < 3) return;
   ring = polyPts.concat([polyPts[0]]);
@@ -519,6 +574,58 @@ async function poll(jid){
   };
   tick();
 }
+
+// ── file browser ────────────────────────────────────────────────────────────
+// The browser will not reveal a real path from <input type=file>, so the
+// server lists directories instead. Pasted paths are cleaned server-side:
+// quotes from "Copy as path", and %20 from anything URL-encoded.
+let fbTarget = null, fbExt = "", fbDirs = false, fbPath = "";
+const fb = document.getElementById('fb');
+
+async function fbLoad(path){
+  const r = await fetch(`/api/browse?path=${encodeURIComponent(path||'')}` +
+                        `&ext=${encodeURIComponent(fbExt)}`);
+  const d = await r.json();
+  fbPath = d.path || "";
+  document.getElementById('fbhead').textContent = fbPath || "This computer";
+  const list = document.getElementById('fblist');
+  list.innerHTML = "";
+  const add = (label, fn, colour) => {
+    const el = document.createElement('div');
+    el.textContent = label;
+    if (colour) el.style.color = colour;
+    el.onclick = fn;
+    list.appendChild(el);
+  };
+  if (d.error) add("(" + d.error + ")", () => {}, "var(--warn)");
+  if (d.parent !== null && d.parent !== undefined)
+    add(".. up", () => fbLoad(d.parent));
+  for (const dir of d.dirs)
+    add("[ " + dir + " ]", () => fbLoad(fbPath ? fbPath + "\\" + dir : dir));
+  if (!fbDirs) for (const f of d.files)
+    add(f.name + "   " + (f.size/1e6).toFixed(1) + " MB", () => {
+      document.getElementById(fbTarget).value = fbPath + "\\" + f.name;
+      fb.style.display = 'none';
+    }, "var(--accent)");
+}
+
+document.querySelectorAll('[data-browse]').forEach(b => {
+  b.onclick = () => {
+    fbTarget = b.dataset.browse;
+    fbExt = b.dataset.ext || "";
+    fbDirs = b.dataset.dirs === "1";
+    document.getElementById('fbpick').style.display = fbDirs ? '' : 'none';
+    fb.style.display = 'flex';
+    const cur = document.getElementById(fbTarget).value.trim();
+    fbLoad(cur || "C:/Users/Tiphaine/Pictures/3D");
+  };
+});
+document.getElementById('fbclose').onclick = () => { fb.style.display = 'none'; };
+document.getElementById('fbpick').onclick = () => {
+  document.getElementById(fbTarget).value = fbPath;
+  fb.style.display = 'none';
+};
+fb.onclick = e => { if (e.target === fb) fb.style.display = 'none'; };
 
 setPanel('acq');
 setMode('nav');
