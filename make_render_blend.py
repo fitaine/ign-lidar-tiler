@@ -33,6 +33,9 @@ def parse_args():
     p.add_argument("--ply", required=True, help="Dense PLY to swap in")
     p.add_argument("--radius", type=float, required=True, help="Mesh to Points radius")
     p.add_argument("--out", required=True, help="Output .blend path")
+    p.add_argument("--drop", action="append", default=[],
+                   help="Delete this object before saving. Repeatable. Use it for "
+                        "a superseded cloud still sitting in the scene.")
     p.add_argument("--strip-volumes", action="store_true",
                    help="Remove volume objects and unlink Volume sockets, so a "
                         "render-time measurement reflects the point cloud alone")
@@ -217,6 +220,31 @@ def main():
     new.name = old_name
     new.data.name = old_name
     print(f"[swap] removed the old cloud, renamed the new one to {old_name!r}", flush=True)
+
+    for name in a.drop:
+        ob = bpy.data.objects.get(name)
+        if ob is None:
+            print(f"[swap] --drop {name!r}: no such object", flush=True)
+            continue
+        n = len(ob.data.vertices) if ob.type == "MESH" else 0
+        me = ob.data if ob.type == "MESH" else None
+        bpy.data.objects.remove(ob, do_unlink=True)
+        if me is not None and me.users == 0:
+            bpy.data.meshes.remove(me)
+        print(f"[swap] dropped {name!r} ({n:,} verts)", flush=True)
+
+    # Another heavy cloud left in the file is added VRAM at render time, and
+    # nothing downstream would tell you why the render is slower than expected.
+    leftovers = [(o.name, len(o.data.vertices)) for o in bpy.data.objects
+                 if o.type == "MESH" and o is not new and len(o.data.vertices) > 1_000_000]
+    if leftovers:
+        total = sum(n for _, n in leftovers)
+        print(f"[swap] WARNING {len(leftovers)} other heavy mesh(es) remain, "
+              f"{total:,} verts in total:", flush=True)
+        for nm, n in leftovers:
+            print(f"[swap]   {nm!r}  {n:,}", flush=True)
+        print(f"[swap]   they will cost VRAM in the render. Use --drop to remove.",
+              flush=True)
 
     found = volume_sources()
     n_vol = sum(len(v) for v in found.values())

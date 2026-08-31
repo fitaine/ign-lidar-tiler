@@ -259,6 +259,8 @@ class Handler(BaseHTTPRequestHandler):
                 args += ["--multiplier", str(body["multiplier"])]
             if body.get("object"):
                 args += ["--object", body["object"]]
+            for d in (body.get("drop") or []):
+                args += ["--drop", d]
             if body.get("out"):
                 args += ["--out", clean_path(body["out"])]
             if body.get("no_crop"):

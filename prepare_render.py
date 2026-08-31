@@ -89,6 +89,8 @@ def main():
                    help="Carve mask cell size in metres (default 3.0)")
     p.add_argument("--object", default=None,
                    help="Cloud object; omit to use the add-on's tag")
+    p.add_argument("--drop", action="append", default=[],
+                   help="Delete this object from the render file. Repeatable.")
     p.add_argument("--no-crop", action="store_true",
                    help="Skip the carve mask and keep the whole footprint")
     p.add_argument("--keep-volumes", action="store_true",
@@ -229,6 +231,8 @@ def main():
            "--ply", final, "--radius", radius, "--out", out_blend]
     if a.object:
         cmd += ["--object", a.object]
+    for d in a.drop:
+        cmd += ["--drop", d]
     if not a.keep_volumes:
         cmd += ["--strip-volumes"]
     run(cmd, "writing the render .blend")
