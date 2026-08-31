@@ -20,10 +20,11 @@ LiDAR tiles would.
 import argparse
 import sys
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
 import numpy as np
+
+import net
 from PIL import Image
 
 Image.MAX_IMAGE_PIXELS = None
@@ -45,9 +46,7 @@ def fetch_dtm(minx, miny, maxx, maxy, cell, out):
          "BBOX": f"{minx},{miny},{maxx},{maxy}",
          "WIDTH": str(w), "HEIGHT": str(h), "FORMAT": "image/geotiff"}
     url = f"{WMS}?{urllib.parse.urlencode(q)}"
-    req = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(req, timeout=300) as r:
-        Path(out).write_bytes(r.read())
+    Path(out).write_bytes(net.get(url, timeout=300))
     a = np.array(Image.open(out)).astype(np.float64)
     a = np.flipud(a)                       # image row 0 is north; we want y up
     valid = a > NODATA

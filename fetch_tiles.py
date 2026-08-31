@@ -20,8 +20,9 @@ import argparse
 import json
 import sys
 import urllib.parse
-import urllib.request
 from pathlib import Path
+
+import net
 
 WFS = "https://data.geopf.fr/wfs/ows"
 LAYER = "IGNF_NUAGES-DE-POINTS-LIDAR-HD:dalle"
@@ -38,9 +39,7 @@ def wfs_page(bbox, start):
         "OUTPUTFORMAT": "application/json",
     }
     url = f"{WFS}?{urllib.parse.urlencode(q)}"
-    req = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(req, timeout=120) as r:
-        return json.loads(r.read().decode("utf-8"))
+    return json.loads(net.get(url, timeout=120).decode("utf-8"))
 
 
 def list_tiles(bbox):
@@ -98,12 +97,7 @@ def tile_intersects_polygon(feature, poly):
 
 
 def head_size(url):
-    req = urllib.request.Request(url, method="HEAD", headers=UA)
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return int(r.headers.get("Content-Length", 0))
-    except Exception:
-        return 0
+    return net.head_size(url)
 
 
 def head_sizes(urls, workers=12):

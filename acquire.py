@@ -105,17 +105,37 @@ def main():
     print(f"[acquire] {len(feats)} tiles selected", flush=True)
 
     if not a.skip_download:
-        for f in feats:
-            url = f["properties"]["url"]
+        urls = [f["properties"]["url"] for f in feats]
+        sizes = fetch_tiles.head_sizes(urls)
+        failed = []
+        for i, (url, size) in enumerate(zip(urls, sizes), 1):
             dest = tiles_dir / Path(url.split("?")[0]).name
-            if dest.is_file():
-                print(f"[acquire]   {dest.name} already present", flush=True)
-                continue
-            fetch_tiles.download(url, dest)
+            print(f"[acquire]   [{i}/{len(urls)}] {dest.name}", flush=True)
+            try:
+                fetch_tiles.download(url, dest, expected=size or None)
+            except Exception as e:
+                print(f"[acquire]      GAVE UP: {e}", flush=True)
+                failed.append(dest.name)
+        if failed:
+            sys.exit(f"[acquire] {len(failed)} tiles could not be downloaded: "
+                     f"{failed}. Re-run the same command to resume.")
 
     tiles = sorted(tiles_dir.glob("*.copc.laz"))
     if not tiles:
         sys.exit(f"no tiles in {tiles_dir}")
+
+    # Confirm every tile actually opens. A truncated download is accepted
+    # silently by everything until PDAL fails on it much later.
+    print(f"[acquire] checking {len(tiles)} tiles are readable ...", flush=True)
+    bad = []
+    for t in tiles:
+        r = subprocess.run([PDAL_EXE, "info", "--summary", str(t)],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            bad.append(t.name)
+    if bad:
+        sys.exit(f"[acquire] these tiles are unreadable, delete them and re-run "
+                 f"to fetch again: {bad}")
 
     # ── 2. scene extent and shared origin ────────────────────────────────────
     minx = miny = minz = float("inf")
