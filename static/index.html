@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>IGN LiDAR Tiler</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>
+  :root{
+    --bg:#14161a; --panel:#1c1f26; --line:#2b303b; --ink:#e8eaee;
+    --muted:#9aa3b2; --accent:#7fd1c1; --warn:#e0a458;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+    font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  /* Anchored to the viewport rather than a height:100% chain from the root:
+     the chain collapsed to 0 and the map never initialised. */
+  #app{position:fixed;inset:0;display:flex}
+  #map{flex:1;min-width:0}
+  #side{width:340px;background:var(--panel);border-left:1px solid var(--line);
+    display:flex;flex-direction:column;overflow-y:auto}
+  h1{font-size:14px;margin:0;padding:14px 16px;border-bottom:1px solid var(--line);
+    letter-spacing:.02em}
+  section{padding:14px 16px;border-bottom:1px solid var(--line)}
+  h2{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
+    margin:0 0 10px}
+  label{display:block;margin:8px 0 3px;color:var(--muted);font-size:12px}
+  input,select{width:100%;padding:6px 8px;background:#12141a;color:var(--ink);
+    border:1px solid var(--line);border-radius:4px;font:inherit}
+  .row{display:flex;gap:8px}
+  .row>*{flex:1;min-width:0}
+  button{padding:8px 10px;background:#252a34;color:var(--ink);border:1px solid var(--line);
+    border-radius:4px;cursor:pointer;font:inherit}
+  button:hover{background:#2e3542}
+  button.on{background:var(--accent);color:#10221f;border-color:var(--accent);font-weight:600}
+  button.go{background:var(--accent);color:#10221f;border-color:var(--accent);
+    font-weight:600;width:100%;margin-top:12px;padding:10px}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .check{display:flex;align-items:center;gap:8px;margin-top:10px}
+  .check input{width:auto}
+  .stat{display:flex;justify-content:space-between;padding:3px 0}
+  .stat span:last-child{color:var(--accent);font-variant-numeric:tabular-nums}
+  .hint{color:var(--muted);font-size:11.5px;margin-top:8px}
+  .warn{color:var(--warn)}
+  #tiles{max-height:150px;overflow-y:auto;margin-top:8px;font-size:11px;
+    color:var(--muted);font-variant-numeric:tabular-nums}
+  #log{font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;
+    white-space:pre-wrap;background:#0f1116;border:1px solid var(--line);
+    border-radius:4px;padding:8px;max-height:220px;overflow-y:auto;color:#b9c1cf}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map"></div>
+  <div id="side">
+    <h1>IGN LiDAR Tiler</h1>
+
+    <section>
+      <h2>Base layer</h2>
+      <div class="row">
+        <button id="b-ortho" class="on">Ortho</button>
+        <button id="b-plan">Plan</button>
+      </div>
+      <div class="check">
+        <input type="checkbox" id="showgrid" checked>
+        <label for="showgrid" style="margin:0">Show the LiDAR tile grid</label>
+      </div>
+    </section>
+
+    <section>
+      <h2>Select</h2>
+      <div class="row">
+        <button id="b-rect" class="on">Rectangle</button>
+        <button id="b-poly">Free shape</button>
+        <button id="b-clear">Clear</button>
+      </div>
+      <div class="hint" id="drawhint">Drag on the map to draw a rectangle.</div>
+      <div id="sel" style="margin-top:10px"></div>
+      <div id="tiles"></div>
+    </section>
+
+    <section>
+      <h2>Scene</h2>
+      <label for="name">Name</label>
+      <input id="name" placeholder="mont-aiguille">
+      <label for="out">Output folder</label>
+      <input id="out" placeholder="C:\Users\Tiphaine\Pictures\3D\scenes\mont-aiguille">
+      <div class="row">
+        <div>
+          <label for="target">Sparse target (M points)</label>
+          <input id="target" type="number" value="40" min="1" step="1">
+        </div>
+        <div>
+          <label for="rres">Ortho m/px</label>
+          <select id="rres">
+            <option value="0.20" selected>0.20 native</option>
+            <option value="0.50">0.50 quick</option>
+            <option value="1.00">1.00 draft</option>
+          </select>
+        </div>
+      </div>
+      <label for="mult">Ball radius multiplier</label>
+      <input id="mult" type="number" value="1.0" min="0.1" step="0.05">
+      <div class="hint">1.0 = spheres touch without overlapping. The radius itself
+        is derived from the voxel, never typed.</div>
+      <div class="check">
+        <input type="checkbox" id="crop">
+        <label for="crop" style="margin:0">Clip to the drawn shape</label>
+      </div>
+      <div class="hint">Off, whole 1 km tiles with a staircase edge. On costs
+        nothing extra, the crop already runs.</div>
+      <button class="go" id="go" disabled>Acquire scene</button>
+    </section>
+
+    <section id="jobsec" style="display:none">
+      <h2>Job <span id="jstate" style="color:var(--accent)"></span></h2>
+      <div id="log"></div>
+    </section>
+  </div>
+</div>
+<script>
+const WMTS = (layer, fmt) =>
+  `https://data.geopf.fr/wmts?SERVICE=WMTS&VERSION=1.0.0&REQUEST=GetTile` +
+  `&LAYER=${layer}&STYLE=normal&FORMAT=${fmt}&TILEMATRIXSET=PM` +
+  `&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}`;
+
+const map = new maplibregl.Map({
+  container: 'map',
+  style: {
+    version: 8,
+    sources: {
+      ortho: {type:'raster', tiles:[WMTS('ORTHOIMAGERY.ORTHOPHOTOS','image/jpeg')],
+              tileSize:256, attribution:'IGN-F/Geoplateforme'},
+      plan:  {type:'raster', tiles:[WMTS('GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2','image/png')],
+              tileSize:256, attribution:'IGN-F/Geoplateforme'}
+    },
+    layers: [
+      {id:'ortho', type:'raster', source:'ortho'},
+      {id:'plan',  type:'raster', source:'plan', layout:{visibility:'none'}}
+    ]
+  },
+  center: [5.5503, 44.8409], zoom: 12
+});
+// The pane can size the container after the map is constructed.
+new ResizeObserver(() => map.resize()).observe(document.getElementById('map'));
+
+const empty = {type:'FeatureCollection', features:[]};
+map.on('load', () => {
+  map.addSource('grid', {type:'geojson', data:empty});
+  map.addLayer({id:'grid-line', type:'line', source:'grid',
+    paint:{'line-color':'#7fd1c1','line-width':0.7,'line-opacity':0.55}});
+  map.addSource('hit', {type:'geojson', data:empty});
+  map.addLayer({id:'hit-fill', type:'fill', source:'hit',
+    paint:{'fill-color':'#7fd1c1','fill-opacity':0.22}});
+  map.addLayer({id:'hit-line', type:'line', source:'hit',
+    paint:{'line-color':'#7fd1c1','line-width':1.2}});
+  map.addSource('sel', {type:'geojson', data:empty});
+  map.addLayer({id:'sel-fill', type:'fill', source:'sel',
+    paint:{'fill-color':'#e0a458','fill-opacity':0.15}});
+  map.addLayer({id:'sel-line', type:'line', source:'sel',
+    paint:{'line-color':'#e0a458','line-width':2}});
+  refreshGrid();
+});
+map.on('moveend', refreshGrid);
+
+let gridTimer = null;
+function refreshGrid(){
+  const src = () => map.getSource('grid');
+  if (!src()) return;                          // style not ready yet
+  if (!document.getElementById('showgrid').checked) {
+    map.getSource('grid') && map.getSource('grid').setData(empty); return;
+  }
+  if (map.getZoom() < 11) {                     // the grid is meaningless zoomed out
+    map.getSource('grid') && map.getSource('grid').setData(empty); return;
+  }
+  clearTimeout(gridTimer);
+  gridTimer = setTimeout(async () => {
+    const b = map.getBounds();
+    const r = await fetch(`/api/tiles?w=${b.getWest()}&s=${b.getSouth()}` +
+                          `&e=${b.getEast()}&n=${b.getNorth()}`);
+    const gj = await r.json();
+    if (gj.features && src()) src().setData(gj);
+  }, 250);
+}
+document.getElementById('showgrid').onchange = refreshGrid;
+
+// ── base layer ──────────────────────────────────────────────────────────────
+function base(which){
+  map.setLayoutProperty('ortho','visibility', which==='ortho'?'visible':'none');
+  map.setLayoutProperty('plan','visibility', which==='plan'?'visible':'none');
+  document.getElementById('b-ortho').classList.toggle('on', which==='ortho');
+  document.getElementById('b-plan').classList.toggle('on', which==='plan');
+}
+document.getElementById('b-ortho').onclick = () => base('ortho');
+document.getElementById('b-plan').onclick  = () => base('plan');
+
+// ── drawing ─────────────────────────────────────────────────────────────────
+let mode = 'rect', ring = null, dragStart = null, polyPts = [];
+const hint = document.getElementById('drawhint');
+
+function setMode(m){
+  mode = m; polyPts = []; dragStart = null;
+  document.getElementById('b-rect').classList.toggle('on', m==='rect');
+  document.getElementById('b-poly').classList.toggle('on', m==='poly');
+  map.dragPan.enable();
+  hint.textContent = m==='rect'
+    ? 'Drag on the map to draw a rectangle.'
+    : 'Click to add points. Double-click, or click the first point, to close.';
+}
+document.getElementById('b-rect').onclick = () => setMode('rect');
+document.getElementById('b-poly').onclick = () => setMode('poly');
+document.getElementById('b-clear').onclick = () => {
+  ring = null; polyPts = [];
+  map.getSource('sel').setData(empty);
+  map.getSource('hit').setData(empty);
+  document.getElementById('sel').innerHTML = '';
+  document.getElementById('tiles').innerHTML = '';
+  document.getElementById('go').disabled = true;
+};
+
+function drawRing(pts, closed){
+  const r = closed ? pts.concat([pts[0]]) : pts;
+  map.getSource('sel').setData({type:'Feature',
+    geometry:{type: closed ? 'Polygon' : 'LineString',
+              coordinates: closed ? [r] : r}, properties:{}});
+}
+
+map.on('mousedown', e => {
+  if (mode !== 'rect') return;
+  dragStart = [e.lngLat.lng, e.lngLat.lat];
+  map.dragPan.disable();
+});
+map.on('mousemove', e => {
+  if (mode !== 'rect' || !dragStart) return;
+  const [x0,y0] = dragStart, x1 = e.lngLat.lng, y1 = e.lngLat.lat;
+  drawRing([[x0,y0],[x1,y0],[x1,y1],[x0,y1]], true);
+});
+map.on('mouseup', e => {
+  if (mode !== 'rect' || !dragStart) return;
+  const [x0,y0] = dragStart, x1 = e.lngLat.lng, y1 = e.lngLat.lat;
+  dragStart = null; map.dragPan.enable();
+  if (Math.abs(x1-x0) < 1e-5 || Math.abs(y1-y0) < 1e-5) return;
+  ring = [[x0,y0],[x1,y0],[x1,y1],[x0,y1],[x0,y0]];
+  drawRing([[x0,y0],[x1,y0],[x1,y1],[x0,y1]], true);
+  select();
+});
+map.on('click', e => {
+  if (mode !== 'poly') return;
+  const p = [e.lngLat.lng, e.lngLat.lat];
+  if (polyPts.length > 2){
+    const first = map.project(polyPts[0]), now = map.project(p);
+    if (Math.hypot(first.x-now.x, first.y-now.y) < 12){ closePoly(); return; }
+  }
+  polyPts.push(p);
+  drawRing(polyPts, polyPts.length > 2);
+});
+map.on('dblclick', e => { if (mode === 'poly' && polyPts.length > 2){
+  e.preventDefault(); closePoly(); } });
+function closePoly(){
+  if (polyPts.length < 3) return;
+  ring = polyPts.concat([polyPts[0]]);
+  drawRing(polyPts, true);
+  polyPts = [];
+  select();
+}
+
+// ── selection ───────────────────────────────────────────────────────────────
+const fmtGB = b => (b/1e9).toFixed(2) + ' GB';
+async function select(){
+  const sel = document.getElementById('sel');
+  sel.innerHTML = '<div class="hint">asking IGN…</div>';
+  const r = await fetch('/api/select', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({ring})});
+  const d = await r.json();
+  if (d.error){ sel.innerHTML = `<div class="warn">${d.error}</div>`; return; }
+  map.getSource('hit').setData(d.geojson);
+  const [minx,miny,maxx,maxy] = d.bbox;
+  sel.innerHTML =
+    `<div class="stat"><span>tiles</span><span>${d.count}</span></div>` +
+    `<div class="stat"><span>area</span><span>${d.count} km²</span></div>` +
+    `<div class="stat"><span>extent</span><span>${Math.round(maxx-minx)} × ${Math.round(maxy-miny)} m</span></div>` +
+    `<div class="stat"><span>download</span><span>${fmtGB(d.bytes)}</span></div>`;
+  document.getElementById('tiles').innerHTML =
+    d.tiles.map(t => `${t.name} &nbsp; ${(t.bytes/1e6).toFixed(0)} MB`).join('<br>');
+  document.getElementById('go').disabled = d.count === 0;
+}
+
+// ── run ─────────────────────────────────────────────────────────────────────
+document.getElementById('go').onclick = async () => {
+  const name = document.getElementById('name').value.trim();
+  const out  = document.getElementById('out').value.trim();
+  if (!name || !out){ alert('Name and output folder are required.'); return; }
+  const body = {
+    ring, name, out,
+    target: Math.round(parseFloat(document.getElementById('target').value) * 1e6),
+    raster_res: parseFloat(document.getElementById('rres').value),
+    multiplier: parseFloat(document.getElementById('mult').value),
+    crop_to_shape: document.getElementById('crop').checked
+  };
+  const r = await fetch('/api/acquire', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const d = await r.json();
+  if (d.error){ alert(d.error); return; }
+  document.getElementById('go').disabled = true;
+  document.getElementById('jobsec').style.display = 'block';
+  poll(d.job);
+};
+
+async function poll(jid){
+  const st = document.getElementById('jstate'), log = document.getElementById('log');
+  const tick = async () => {
+    const r = await fetch('/api/job/' + jid);
+    const j = await r.json();
+    st.textContent = j.state || '';
+    log.textContent = (j.log || []).join('\n');
+    log.scrollTop = log.scrollHeight;
+    if (j.state === 'running' || j.state === 'queued') setTimeout(tick, 1200);
+    else document.getElementById('go').disabled = false;
+  };
+  tick();
+}
+setMode('rect');
+</script>
+</body>
+</html>

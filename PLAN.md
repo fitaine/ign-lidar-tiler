@@ -304,7 +304,10 @@ that already works.
    area, which kept 54.1% of its points (the excess is terrain: the middle of
    that tile is steeper, so it carries more surface per square metre).
 6. **2** DONE. `blender_addon/ign_lidar_tiler.py`.
-7. **UI** Wrap stage 3 in the web app once the command line version is trusted.
+7. **UI** DONE for stage 1: `server.py` + `static/index.html`. Rectangle and
+   free-shape drawing over IGN ortho/plan, live tile grid, tile count, area,
+   extent and download size, then it runs `acquire.py` and streams the log.
+   Stage 3 is not in the UI yet: it still runs from the command line.
 
 ## Stack
 

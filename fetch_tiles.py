@@ -106,6 +106,14 @@ def head_size(url):
         return 0
 
 
+def head_sizes(urls, workers=12):
+    """Size many tiles at once. Serially this took ~15 s for 20 tiles, which is
+    long enough to feel broken while dragging a selection on the map."""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        return list(ex.map(head_size, urls))
+
+
 def download(url, dest):
     tmp = dest.with_suffix(dest.suffix + ".part")
     req = urllib.request.Request(url, headers=UA)
@@ -163,16 +171,15 @@ def main():
         sys.exit("no tiles found for that footprint")
 
     feats.sort(key=lambda f: f["properties"]["name"])
+    urls = [f["properties"]["url"] for f in feats]
+    sizes = head_sizes(urls)
     rows = []
     total = 0
-    for f in feats:
-        pr = f["properties"]
-        url = pr["url"]
-        name = Path(urllib.parse.urlparse(url).path).name
-        size = head_size(url)
+    for f, url, size in zip(feats, urls, sizes):
         total += size
-        rows.append({"name": name, "url": url, "bytes": size,
-                     "id": pr.get("id"), "ring": ring_of(f)})
+        rows.append({"name": Path(urllib.parse.urlparse(url).path).name,
+                     "url": url, "bytes": size,
+                     "id": f["properties"].get("id"), "ring": ring_of(f)})
 
     print(f"\n{len(rows)} tiles, {len(rows)} km2, {total/1e9:.2f} GB to download\n")
     for r in rows:
