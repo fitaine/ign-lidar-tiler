@@ -27,7 +27,9 @@ def parse_args():
     argv = sys.argv
     argv = argv[argv.index("--") + 1:] if "--" in argv else []
     p = argparse.ArgumentParser()
-    p.add_argument("--object", required=True, help="Name of the cloud object to replace")
+    p.add_argument("--object", default=None,
+                   help="Cloud object to replace. Omit to use the object tagged "
+                        "by the Blender add-on (ign_lidar_scene custom property)")
     p.add_argument("--ply", required=True, help="Dense PLY to swap in")
     p.add_argument("--radius", type=float, required=True, help="Mesh to Points radius")
     p.add_argument("--out", required=True, help="Output .blend path")
@@ -122,10 +124,22 @@ def main():
     if not ply.is_file():
         sys.exit(f"PLY not found: {ply}")
 
-    old = bpy.data.objects.get(a.object)
-    if old is None:
-        names = [o.name for o in bpy.data.objects if o.type in ("MESH", "POINTCLOUD")]
-        sys.exit(f"Object {a.object!r} not found. Candidates: {names}")
+    if a.object:
+        old = bpy.data.objects.get(a.object)
+        if old is None:
+            names = [o.name for o in bpy.data.objects if o.type in ("MESH", "POINTCLOUD")]
+            sys.exit(f"Object {a.object!r} not found. Candidates: {names}")
+    else:
+        tagged = [o for o in bpy.data.objects if o.get("ign_lidar_scene")]
+        if not tagged:
+            sys.exit("no object carries an ign_lidar_scene tag; pass --object, or "
+                     "tag the cloud with the IGN LiDAR Tiler add-on")
+        if len(tagged) > 1:
+            sys.exit(f"several tagged objects, pass --object to choose: "
+                     f"{[o.name for o in tagged]}")
+        old = tagged[0]
+        print(f"[swap] using tagged object {old.name!r} "
+              f"(scene {old.get('ign_lidar_name')!r})", flush=True)
 
     old_matrix = old.matrix_world.copy()
     old_materials = [m for m in old.data.materials]

@@ -111,10 +111,16 @@ plus a single translation of the object**, no scale, no duplicates. Deletions
 made by hand and deletions made through the Blender MCP are identical to the
 app, they are just absent vertices.
 
-The add-on is one panel that tags a point cloud object with its scene name,
-stored as a custom property on the object. This is what lets stage 3 know which
-object is a proxy for which scene. Convention over object names was considered
-and rejected: it breaks the first time an object is renamed.
+`blender_addon/ign_lidar_tiler.py` adds one panel under Properties > Object.
+It tags a cloud with the path to its `scene.json`, stored as a custom property
+rather than a naming convention, which would break the first time an object is
+renamed. `make_render_blend.py` then finds the cloud on its own and `--object`
+becomes optional.
+
+The panel also shows the manifest's variants and applies a variant's derived
+radius, printing both the raw value and what the panel will display, since the
+Radius socket is unit-scaled (a scene at `scale_length` 0.01 shows 0.00325 for
+a raw 0.325). The tag survives the swap, so the render file stays identified.
 
 ## Precision rules (learned the hard way, 2026-08-30)
 
@@ -293,7 +299,7 @@ that already works.
    Remaining: orchestration into a single acquire step that writes
    `scene.json`, and the map UI.
 5. **1b** Crop-to-shape option.
-6. **2**  Blender add-on panel for tagging.
+6. **2** DONE. `blender_addon/ign_lidar_tiler.py`.
 7. **UI** Wrap stage 3 in the web app once the command line version is trusted.
 
 ## Stack
