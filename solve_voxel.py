@@ -55,6 +55,74 @@ def count_after_downsample(tile, voxel, workdir):
     return n
 
 
+def verify_below_range(picks, target_v, v1, v2, n1, n2, scene_at_v2,
+                       effective_target, multiplier, allow_saturated):
+    """Measure at the extrapolated answer, and refuse it if the data is spent.
+
+    Returns (voxel, radius), or exits when the target turns out to be
+    unreachable and the caller has not passed --allow-saturated. A wrong voxel
+    here costs a night of rendering; this check costs a few minutes.
+    """
+    fine, coarse = min(v1, v2), max(v1, v2)
+    n_fine = n1 if v1 < v2 else n2
+    n_coarse = n2 if v1 < v2 else n1
+    mid = (target_v * fine) ** 0.5
+    print(f"\nthe answer {target_v:.3f} is below the probed range "
+          f"[{fine:.2f}, {coarse:.2f}], where the fit stops holding. "
+          f"Measuring there instead of trusting it:", flush=True)
+
+    with tempfile.TemporaryDirectory() as wd:
+        got = {}
+        for v in (target_v, mid):
+            got[v] = sum(count_after_downsample(t, v, wd) for t, _ in picks)
+            print(f"  voxel {v:.3f}: {got[v]:,} points on the probe tiles", flush=True)
+
+    # scale the probe tiles up to the scene exactly as the coarse pass did
+    at_target = scene_at_v2 * got[target_v] / float(n_coarse)
+    print(f"\nmeasured: the scene holds {at_target:,.0f} points at voxel "
+          f"{target_v:.3f}, against the {effective_target:,.0f} asked for "
+          f"({100*at_target/max(effective_target,1):.0f}% of it)", flush=True)
+
+    # Per-interval exponents. A real surface gives about 2; the number
+    # collapsing towards 0 is the scene running out of data.
+    counts = {target_v: got[target_v], mid: got[mid], fine: n_fine}
+    steps = sorted(counts)
+    print("\nhow the count actually grows as the cells shrink:", flush=True)
+    usable = None
+    for lo, hi in zip(steps, steps[1:]):
+        e = log(counts[lo] / counts[hi]) / log(hi / lo)
+        print(f"  {hi:.3f} -> {lo:.3f} m: voxel^-{e:.2f}   "
+              f"{'real detail' if e >= 1.0 else 'sampled out'}", flush=True)
+        if e >= 1.0:
+            usable = lo
+    # None of the measured intervals bought real detail: the probe range is
+    # already past this scene's sampling, so the answer lies coarser than
+    # anything measured here and cannot be named precisely.
+    probe_too_fine = usable is None
+    usable = usable or fine
+
+    if at_target >= 0.85 * effective_target:
+        return target_v, target_v / 2.0 * multiplier
+
+    print(f"\nSATURATED: this scene cannot reach the target at any voxel. Below "
+          f"about {usable:.2f} m the cells are finer than the scan itself, so "
+          f"the extra points are isolated specks rather than surface.", flush=True)
+    print(f"  reachable here      : about {at_target:,.0f} points before cropping",
+          flush=True)
+    if probe_too_fine:
+        print(f"  finest useful voxel : coarser than {usable:.2f} m — even the "
+              f"probe range is past this scene's sampling. Probe coarser to "
+              f"find it, e.g. --probe {coarse:.2f},{2*coarse:.2f}", flush=True)
+    else:
+        print(f"  finest useful voxel : {usable:.2f} m", flush=True)
+    if not allow_saturated:
+        print("\nRefusing to answer. Lower the target, carve a larger area, or "
+              "pass --allow-saturated if you want the specks anyway.", flush=True)
+        sys.exit(2)
+    print("\n--allow-saturated given, answering anyway", flush=True)
+    return target_v, target_v / 2.0 * multiplier
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -73,6 +141,10 @@ def main():
                         "on scenes with varied terrain.")
     p.add_argument("--multiplier", type=float, default=1.0,
                    help="Ball radius multiplier, 1.0 = spheres touch")
+    p.add_argument("--allow-saturated", action="store_true",
+                   help="Answer anyway when the measurement shows the scene "
+                        "cannot deliver the target. The cloud will render as "
+                        "specks; you are saying you know that.")
     a = p.parse_args()
 
     tiles = sorted(Path(a.tiles).glob("*.copc.laz"))
@@ -140,6 +212,19 @@ def main():
               f"for {effective_target:,.0f} points before cropping", flush=True)
     target_v = v2 * (scene_at_v2 / effective_target) ** (1.0 / exponent)
     radius = target_v / 2.0 * a.multiplier
+
+    # ── the answer may be an extrapolation, and that is where it breaks ──
+    # The exponent is fitted between the two probe sizes. Below that range a
+    # LiDAR cloud stops behaving like a surface: once the cells are finer than
+    # the scan's own sampling, shrinking them adds almost nothing, because the
+    # points were never there. The fit keeps promising detail the data cannot
+    # deliver. La Plagne asked for 460M before cropping, the fit answered voxel
+    # 0.238, the scene held 208M, and the render was built out of specks. So
+    # when the answer lands below the probed range, go and measure it.
+    if target_v < min(v1, v2) * 0.98:
+        target_v, radius = verify_below_range(
+            picks, target_v, v1, v2, n1, n2, scene_at_v2, effective_target,
+            a.multiplier, a.allow_saturated)
 
     print(f"\nfitted points proportional to voxel^-{exponent:.3f}", flush=True)
     print(f"scene at voxel {v2}: {scene_at_v2:,.0f} points "

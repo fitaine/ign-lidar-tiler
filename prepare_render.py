@@ -109,6 +109,10 @@ def main():
                    help="Remove volumetrics. Off by default: they are part of the "
                         "image, not overhead. Use this only when measuring what "
                         "the point cloud alone costs.")
+    p.add_argument("--allow-sparse", action="store_true",
+                   help="Write the render file even when the cloud came out far "
+                        "short of the target, or when its spheres do not touch. "
+                        "Off by default: that combination is a wasted render.")
     p.add_argument("--out", default=None, help="Output .blend")
     p.add_argument("--blender-exe", default=None)
     a = p.parse_args()
@@ -256,6 +260,37 @@ def main():
         print(f"[prep] NOTE asked for {target:,} points, built {n_pts:,} "
               f"({100*(n_pts-target)/target:+.1f}%). Naming the file after the "
               f"real count.", flush=True)
+
+    # ── does this cloud actually hold a surface? ─────────────────────────────
+    # A shortfall used to be a note, and a note is not enough: La Plagne asked
+    # for 150M, built 71M, said so in one line, and went on to write a render
+    # file whose points do not touch each other. What renders as a surface is
+    # decided by whether the spheres meet, so measure that here, on the file
+    # that is about to be rendered, while stopping is still cheap.
+    import check_fill
+    fill = check_fill.measure(final, voxel)
+    tag, note = check_fill.verdict(fill)
+    print(f"[prep] fill check: {fill['touching_mean']:.2f} of 6 neighbours "
+          f"touching, lattice {100*fill['fill']:.0f}% filled, "
+          f"{100*fill['isolated']:.1f}% of points isolated -> {tag}", flush=True)
+
+    short = n_pts < 0.80 * target
+    if (tag == "DUST" or short) and not a.allow_sparse:
+        print(f"[prep] STOP before writing the render file.", flush=True)
+        if short:
+            print(f"[prep]   asked for {target:,} points, the data gave "
+                  f"{n_pts:,} ({100*n_pts/target:.0f}%).", flush=True)
+        if tag == "DUST":
+            print(f"[prep]   {note}", flush=True)
+            print(f"[prep]   at voxel {voxel:.3f} the cells are finer than the "
+                  f"scan's own sampling. A coarser voxel will look better AND "
+                  f"render faster.", flush=True)
+        print(f"[prep]   the dense PLY is kept at {final}", flush=True)
+        print(f"[prep]   rerun with a coarser --voxel, or --allow-sparse to "
+              f"proceed anyway.", flush=True)
+        sys.exit(3)
+    if tag == "THIN":
+        print(f"[prep] WARNING {note}", flush=True)
 
     out_blend = Path(a.out) if a.out else blend.with_name(
         f"{blend.stem} - {round(n_pts/1e6)}M-HEADLESS.blend")
