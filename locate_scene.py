@@ -144,7 +144,10 @@ def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--grid", required=True, help="npz from export_height_grid.py")
-    p.add_argument("--centre", required=True, help="X,Y in Lambert 93 to search around")
+    p.add_argument("--centre", default=None, help="X,Y in Lambert 93 to search around")
+    p.add_argument("--dtm-bbox", default=None,
+                   help="minx,miny,maxx,maxy of a --dtm supplied externally, for "
+                        "rasters that are not square around a centre")
     p.add_argument("--radius", type=float, default=4000.0,
                    help="Half-width of the search area in metres")
     p.add_argument("--cell", type=float, default=None,
@@ -164,10 +167,17 @@ def main():
     print(f"cloud raster {cw} x {ch} at {cell} m "
           f"({100*mask.mean():.1f}% occupied)", flush=True)
 
-    cx, cy = (float(v) for v in a.centre.split(","))
-    r = a.radius
-    minx, miny = cx - r, cy - r
-    maxx, maxy = cx + r, cy + r
+    if a.dtm_bbox:
+        minx, miny, maxx, maxy = (float(v) for v in a.dtm_bbox.split(","))
+        if not a.dtm:
+            sys.exit("--dtm-bbox only makes sense with --dtm")
+    elif a.centre:
+        cx, cy = (float(v) for v in a.centre.split(","))
+        r = a.radius
+        minx, miny = cx - r, cy - r
+        maxx, maxy = cx + r, cy + r
+    else:
+        sys.exit("give --centre or --dtm-bbox")
     dtm_path = a.keep_dtm or "._dtm_search.tif"
     if a.dtm:
         dtm = np.flipud(np.array(Image.open(a.dtm)).astype(np.float64))
