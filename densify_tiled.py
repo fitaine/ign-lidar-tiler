@@ -49,7 +49,16 @@ PDAL_EXE = r"C:\Program Files\QGIS 3.40.5\bin\pdal.exe"
 ANCHOR = (800000.0, 6300000.0, 0.0)
 
 
-def tile_pipeline(tile, raster, voxel, origin, bounds, out_ply):
+def polygon_wkt(ring):
+    """Closed ring of [x, y] to WKT POLYGON, for filters.crop."""
+    pts = list(ring)
+    if pts[0] != pts[-1]:
+        pts.append(pts[0])
+    inner = ", ".join(f"{x} {y}" for x, y in ((q[0], q[1]) for q in pts))
+    return f"POLYGON (({inner}))"
+
+
+def tile_pipeline(tile, raster, voxel, origin, bounds, out_ply, polygon=None):
     ox, oy, oz = origin
     (minx, miny, maxx, maxy) = bounds
     ax, ay, az = ANCHOR
@@ -60,9 +69,11 @@ def tile_pipeline(tile, raster, voxel, origin, bounds, out_ply):
         {"type": "readers.copc", "filename": str(tile)},
         {"type": "filters.merge"},
         {"type": "filters.voxeldownsize", "cell": voxel},
-        # Drops the anchor along with anything outside the scene.
-        {"type": "filters.crop",
-         "bounds": f"([{minx},{maxx}],[{miny},{maxy}])"},
+        # Drops the anchor along with anything outside the scene. When a
+        # polygon is given this is also the crop-to-shape step, trading one
+        # extra pass for a clean edge instead of a 1 km staircase.
+        ({"type": "filters.crop", "polygon": polygon} if polygon else
+         {"type": "filters.crop", "bounds": f"([{minx},{maxx}],[{miny},{maxy}])"}),
     ]
     if raster:
         stages.append({"type": "filters.colorization", "raster": str(raster)})
@@ -97,6 +108,9 @@ def main():
     p.add_argument("--multiplier", type=float, default=1.0)
     p.add_argument("--name", required=True)
     p.add_argument("--out", required=True)
+    p.add_argument("--polygon", default=None,
+                   help="GeoJSON Polygon file (Lambert 93) to crop to, instead of "
+                        "keeping whole tiles with a staircase edge")
     p.add_argument("--keep-parts", action="store_true",
                    help="Do not delete the per-tile PLYs")
     a = p.parse_args()
@@ -134,6 +148,16 @@ def main():
     print(f"{len(tiles)} tiles, voxel {a.voxel}, radius {radius:.4f}", flush=True)
     print(f"scene bounds {minx:.0f},{miny:.0f} .. {maxx:.0f},{maxy:.0f}", flush=True)
 
+    wkt = None
+    if a.polygon:
+        gj = json.loads(Path(a.polygon).read_text(encoding="utf-8"))
+        geom = gj["geometry"] if gj.get("type") == "Feature" else gj
+        if geom["type"] != "Polygon":
+            sys.exit("--polygon needs a single Polygon")
+        wkt = polygon_wkt(geom["coordinates"][0])
+        print(f"cropping to the drawn polygon ({len(geom['coordinates'][0])} vertices)",
+              flush=True)
+
     parts = []
     for i, t in enumerate(tiles, 1):
         part = parts_dir / f"{t.stem}.ply"
@@ -144,7 +168,7 @@ def main():
             parts.append(part)
             continue
         pipe.write_text(json.dumps(
-            tile_pipeline(t, a.raster, a.voxel, origin, bounds, part), indent=2),
+            tile_pipeline(t, a.raster, a.voxel, origin, bounds, part, wkt), indent=2),
             encoding="utf-8")
         r = subprocess.run([PDAL_EXE, "pipeline", str(pipe)],
                            capture_output=True, text=True)

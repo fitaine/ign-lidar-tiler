@@ -82,8 +82,9 @@ nothing in the app parses a filename for truth.
   tile, and shows the count, the covered area and an estimated download size
   before anything is fetched.
 - **Crop to shape** is a checkbox. Off: whole 1 km tiles, ragged staircase
-  edge, no extra pass. On: a PDAL crop to the drawn polygon, clean edges, one
-  extra pass. Default off, since the edge is usually off camera.
+  edge. On: the per-tile crop that already removes the grid anchor is given
+  the drawn polygon instead of the bounding box, so it costs nothing extra.
+  Default off, since the edge is usually off camera.
 - Download, then run the pipeline once: origin from the full selection, ortho
   fetched once at 0.20 m/px, one **sparse** PLY.
 - Sparse target is a control, up to 50M points. The auto voxel formula is
@@ -298,7 +299,10 @@ that already works.
    `solve_voxel.py` (voxel solve by measurement) are done and verified.
    Remaining: orchestration into a single acquire step that writes
    `scene.json`, and the map UI.
-5. **1b** Crop-to-shape option.
+5. **1b** DONE. `--crop-to-shape` on `acquire.py`, `--polygon` on
+   `densify_tiled.py`. Verified with a diamond covering 50.0% of a tile's
+   area, which kept 54.1% of its points (the excess is terrain: the middle of
+   that tile is steeper, so it carries more surface per square metre).
 6. **2** DONE. `blender_addon/ign_lidar_tiler.py`.
 7. **UI** Wrap stage 3 in the web app once the command line version is trusted.
 

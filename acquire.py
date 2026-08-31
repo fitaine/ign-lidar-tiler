@@ -67,6 +67,9 @@ def main():
                    help="Tiles are already present")
     p.add_argument("--tiles-dir", default=None,
                    help="Existing tile archive to use instead of <out>/tiles")
+    p.add_argument("--crop-to-shape", action="store_true",
+                   help="Clip to the drawn polygon instead of keeping whole 1 km "
+                        "tiles with a staircase edge (costs one extra PDAL pass)")
     p.add_argument("--dry-run", action="store_true",
                    help="Report the selection, extent and origin, then stop")
     a = p.parse_args()
@@ -172,7 +175,8 @@ def main():
                         "--tiles", str(tiles_dir), "--raster", str(raster),
                         "--voxel", str(voxel), "--origin", ",".join(str(v) for v in origin),
                         "--multiplier", str(a.multiplier),
-                        "--name", a.name, "--out", str(out)])
+                        "--name", a.name, "--out", str(out)]
+                       + (["--polygon", a.geojson] if (a.crop_to_shape and a.geojson) else []))
     if r.returncode != 0:
         sys.exit(f"densify_tiled failed with {r.returncode}")
 
@@ -190,7 +194,7 @@ def main():
         "bbox": [minx, miny, maxx, maxy],
         "relief": round(maxz - minz, 2),
         "footprint": ({"type": "Polygon", "coordinates": [poly]} if poly else None),
-        "cropped_to_footprint": False,
+        "cropped_to_footprint": bool(a.crop_to_shape and poly),
         "tiles": [t.name for t in tiles],
         "raw_points": raw_total,
         "raster": raster.name,
