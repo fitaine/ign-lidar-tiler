@@ -22,7 +22,7 @@ from datetime import date
 from pathlib import Path
 
 import fetch_tiles
-from densify import build_pipeline, radius_for, suffix_for
+from densify import radius_for, suffix_for
 
 PDAL_EXE = r"C:\Program Files\QGIS 3.40.5\bin\pdal.exe"
 PIPELINE_PY = Path(__file__).resolve().parent.parent / "lidar_pipeline.py"
@@ -164,14 +164,17 @@ def main():
         lp.fetch_raster_tiled(minx, miny, maxx, maxy, a.raster_res, layer, str(raster))
 
     # ── 5. sparse PLY ────────────────────────────────────────────────────────
+    # Built tile by tile: peak memory then follows the largest tile rather than
+    # the whole scene, which is what makes billion-point scenes possible.
     ply = out / f"{a.name}-{suffix_for(radius)}.ply"
-    pipe = out / f"{a.name}-{suffix_for(radius)}_pipeline.json"
-    pipe.write_text(json.dumps(build_pipeline(tiles, raster, voxel, origin, ply), indent=2),
-                    encoding="utf-8")
-    print(f"[acquire] building {ply.name} ...", flush=True)
-    r = subprocess.run([PDAL_EXE, "pipeline", str(pipe)])
+    print(f"[acquire] building {ply.name} tile by tile ...", flush=True)
+    r = subprocess.run([sys.executable, str(Path(__file__).parent / "densify_tiled.py"),
+                        "--tiles", str(tiles_dir), "--raster", str(raster),
+                        "--voxel", str(voxel), "--origin", ",".join(str(v) for v in origin),
+                        "--multiplier", str(a.multiplier),
+                        "--name", a.name, "--out", str(out)])
     if r.returncode != 0:
-        sys.exit(f"pdal failed with {r.returncode}")
+        sys.exit(f"densify_tiled failed with {r.returncode}")
 
     with open(ply, "rb") as f:
         head = f.read(4096).decode("ascii", errors="replace")
