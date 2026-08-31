@@ -50,6 +50,21 @@ def clean_path(raw):
     return p.replace("/", "\\") if ":" in p[:3] else p
 
 
+HIDDEN = 0x2
+SYSTEM = 0x4
+
+
+def _is_noise(entry):
+    r"""Windows keeps legacy junctions like Documents\Mes images that exist
+    only for backwards compatibility and deny listing outright. They are
+    marked hidden+system; showing them just offers dead ends."""
+    try:
+        attrs = entry.stat(follow_symlinks=False).st_file_attributes
+    except (OSError, AttributeError):
+        return False
+    return bool(attrs & HIDDEN) or bool(attrs & SYSTEM)
+
+
 def list_dir(path):
     """Directory listing for the file browser."""
     if not path:
@@ -64,17 +79,20 @@ def list_dir(path):
         p = p.parent
     dirs, files = [], []
     try:
-        for e in sorted(p.iterdir(), key=lambda x: x.name.lower()):
-            try:
-                if e.is_dir():
-                    dirs.append(e.name)
-                else:
-                    files.append({"name": e.name, "size": e.stat().st_size})
-            except OSError:
-                continue
-    except PermissionError:
+        entries = sorted(p.iterdir(), key=lambda x: x.name.lower())
+    except (PermissionError, OSError) as ex:
         return {"path": str(p), "parent": str(p.parent), "dirs": [], "files": [],
-                "error": "permission denied"}
+                "error": f"cannot list this folder ({ex.__class__.__name__})"}
+    for e in entries:
+        if _is_noise(e):
+            continue
+        try:
+            if e.is_dir():
+                dirs.append(e.name)
+            else:
+                files.append({"name": e.name, "size": e.stat().st_size})
+        except OSError:
+            continue
     parent = str(p.parent) if p.parent != p else ""
     return {"path": str(p), "parent": parent, "dirs": dirs, "files": files}
 

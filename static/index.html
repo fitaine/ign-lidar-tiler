@@ -191,6 +191,13 @@
 
 <div id="fb"><div id="fbbox">
   <div id="fbhead"></div>
+  <div style="padding:8px 14px;border-bottom:1px solid var(--line)">
+    <div class="row">
+      <input id="fbpath" placeholder="or type / paste a path, then Enter">
+      <button id="fbgo" style="flex:0 0 auto">Go</button>
+    </div>
+    <div class="row" style="margin-top:8px" id="fbshort"></div>
+  </div>
   <div id="fblist"></div>
   <div id="fbfoot">
     <button id="fbpick" style="display:none">Use this folder</button>
@@ -597,7 +604,8 @@ async function fbLoad(path){
     el.onclick = fn;
     list.appendChild(el);
   };
-  if (d.error) add("(" + d.error + ")", () => {}, "var(--warn)");
+  if (d.error) add(d.error + " — go back up, or type a path above",
+                   () => { if (d.parent) fbLoad(d.parent); }, "var(--warn)");
   if (d.parent !== null && d.parent !== undefined)
     add(".. up", () => fbLoad(d.parent));
   for (const dir of d.dirs)
@@ -620,6 +628,26 @@ document.querySelectorAll('[data-browse]').forEach(b => {
     fbLoad(cur || "C:/Users/Tiphaine/Pictures/3D");
   };
 });
+document.getElementById('fbgo').onclick =
+  () => fbLoad(document.getElementById('fbpath').value.trim());
+document.getElementById('fbpath').onkeydown = e => {
+  if (e.key === 'Enter') fbLoad(e.target.value.trim());
+};
+const SHORTCUTS = [
+  ["3D", "C:/Users/Tiphaine/Pictures/3D"],
+  ["LIDAR PROJECT", "C:/Users/Tiphaine/Pictures/3D/LIDAR PROJECT"],
+  ["Documents", "C:/Users/Tiphaine/Documents"],
+  ["This computer", ""]
+];
+{
+  const box = document.getElementById('fbshort');
+  for (const [label, path] of SHORTCUTS) {
+    const b = document.createElement('button');
+    b.textContent = label; b.style.fontSize = '11.5px';
+    b.onclick = () => fbLoad(path);
+    box.appendChild(b);
+  }
+}
 document.getElementById('fbclose').onclick = () => { fb.style.display = 'none'; };
 document.getElementById('fbpick').onclick = () => {
   document.getElementById(fbTarget).value = fbPath;
