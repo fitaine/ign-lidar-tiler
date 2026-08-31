@@ -221,11 +221,19 @@ objects are not enough to look for: a node linked into a material or world
 Volume socket triggers full volumetrics on its own. Mont Aiguille had four
 sources and `volume_bounces` at 8.
 
-**densify.py does not scale past this scene.** It merges all tiles before
-downsampling, so peak memory is the whole raw cloud: 40 GB for Mont Aiguille's
-565M points. Aravis at 1.18 billion would not fit. The fix is per-tile
-downsampling before the merge, pending a check on whether PDAL's voxel grid
-origin stays consistent across separate views.
+**Memory scaling, solved 2026-08-31.** `densify.py` merged all tiles before
+downsampling, so peak memory was the whole raw cloud: 51 GB measured on Mont
+Aiguille, a projected 107 GB for Aravis and 120 GB for Nantua, both impossible
+on 64 GB. `densify_tiled.py` processes one tile at a time and concatenates the
+PLY bodies, so peak follows the largest tile: 19.4 GB, ~5.1 GB and ~11.1 GB
+respectively. Aravis is now *cheaper* than Mont Aiguille despite twice the
+data, since its billion points are spread over 48 tiles rather than 6.
+
+That needed the grid-anchor trick: PDAL anchors the voxel grid on the first
+point it sees, so adjacent tiles otherwise land on different lattices
+(measured offsets 0.12 and 0.39). A `readers.faux` point at an aligned
+coordinate is fed first, then cropped away. Output matches the merged build to
+0.011% in count and sub-voxel in bounds.
 
 ## Device choice (measured 2026-08-30, one 120k-sized tile)
 
