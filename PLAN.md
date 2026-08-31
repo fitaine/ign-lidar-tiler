@@ -311,7 +311,30 @@ that already works.
 
 ## Stack
 
-FastAPI backend, MapLibre GL front end with the IGN WMTS layers, run locally
-and opened in the browser. Same shape as rendafar without sharing anything with
-it. PDAL and GDAL come from the QGIS install at
-`C:\Program Files\QGIS 3.40.5\bin\`, as `lidar_pipeline.py` already assumes.
+**Standard library only, no FastAPI.** The plan said FastAPI; this machine has
+no web framework installed and a local single-user tool did not justify adding
+one, so `server.py` is built on `http.server`. MapLibre GL is the only front
+end dependency, from a CDN.
+
+**No pyproj either.** The map works in longitude/latitude and everything
+downstream in Lambert 93, so `lambert93.py` implements the projection directly
+(Lambert Conformal Conic, 2 standard parallels, on GRS80). It round-trips with
+zero error and agrees with `gdaltransform` to eight decimal places.
+
+PDAL and GDAL come from the QGIS install, as `lidar_pipeline.py` already
+assumes.
+
+## Running it
+
+    python server.py            # then open http://localhost:8765
+
+Draw a rectangle or a free shape, name the scene, choose an output folder and
+press Acquire. Then light and carve in Blender, tag the cloud with the add-on,
+and run the render prep:
+
+    blender -b scene.blend --python extract_mask.py -- --object <cloud> --cell 3.0 --out mask.npz
+    python densify_tiled.py --tiles <dir> --raster <tif> --voxel <v> --origin <x,y,z> --name <n> --out <dir>
+    python crop_to_mask.py --ply dense.ply --mask mask.npz --out dense-cropped.ply
+    blender -b scene.blend --python make_render_blend.py -- --ply dense-cropped.ply --radius <r> --strip-volumes --out render.blend
+
+Stage 3 is not in the UI yet; it runs from the command line.
