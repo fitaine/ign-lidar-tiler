@@ -154,8 +154,20 @@ machinery, so this is a small addition once both exist.
    a coarse grid, a few metres per cell. This reproduces arbitrary carving,
    including interior holes, vertical cuts and ragged edges, without anyone
    having to describe the shape.
-4. Crop the archive tiles to the mask, colorize from the ortho, downsample to
-   the dense voxel, export the dense PLY recentred on the same origin.
+4. Crop to the mask, colorize from the ortho, downsample to the dense voxel,
+   export the dense PLY recentred on the same origin.
+
+   **Measured mask behaviour (2026-08-31).** The cell must be comfortably
+   coarser than the sparse cloud's point spacing, or cells inside the kept
+   region come up empty by chance and the mask punches holes in itself: at
+   3.4x spacing a synthetic test kept 74% where truth was 87%. `extract_mask.py`
+   warns below 4x. At an adequate cell the mask slightly over-keeps at the
+   edges, which is the safe direction. Default 3 m sits at 12-18x on real
+   scenes. End-to-end on Mont Aiguille (uncarved, so the mask should be a
+   no-op): 152,755,274 of 153,027,647 kept, **99.8%**. On La Plagne (carved)
+   the mask covers 39.7% of the footprint, matching an independent measurement
+   of 39.0%, and only **1.72% of the 3D grid volume**, since terrain is a thin
+   surface in a tall box. That volume figure is the saving the crop delivers.
 5. Write the render .blend: same scene, same lighting, same camera, cloud
    replaced, radius set from the dense voxel and the multiplier, material and
    GN modifier carried over, `Col` kept as `FLOAT_COLOR`.
@@ -255,11 +267,11 @@ driven from the command line before any UI exists, and it is where the
 uncertainty is. Stage 1's map is the more visible half but it automates work
 that already works.
 
-1. **3a** Mask crop and dense PLY export, command line, against an existing
-   scene and an existing .blend.
-2. **3b** Render .blend generation, radius applied, verified by a single test
-   tile against the sparse render.
-3. **3c** Density calibration on that test tile, sets the default.
+1. **3a** DONE. `densify.py` (dense PLY export), `extract_mask.py` +
+   `crop_to_mask.py` (occupancy mask crop).
+2. **3b** DONE. `make_render_blend.py`, radius applied, volumetrics stripped,
+   verified by production tiles.
+3. **3c** DONE. See the production budget above; working maximum 150M.
 4. **1a** Tile index, map, selection, download, sparse PLY, `scene.json`.
 5. **1b** Crop-to-shape option, voxel solve-by-measurement.
 6. **2**  Blender add-on panel for tagging.
