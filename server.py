@@ -230,6 +230,39 @@ class Handler(BaseHTTPRequestHandler):
                 "geojson": tiles_as_geojson(feats),
             })
 
+        if u.path == "/api/pick":
+            # A real Windows dialog, opened on this machine. The browser cannot
+            # do it: <input type=file> never reveals a real path. Run as its own
+            # process because Tk is not thread-safe and we answer on threads.
+            py = sys.executable
+            pyw = Path(py).with_name("pythonw.exe")
+            if pyw.is_file():
+                py = str(pyw)          # no console window flashing up
+            args = [py, str(HERE / "pick_path.py"),
+                    "--kind", body.get("kind", "file")]
+            if body.get("ext"):
+                args += ["--ext", body["ext"]]
+            if body.get("title"):
+                args += ["--title", body["title"]]
+            start = clean_path(body.get("start") or "")
+            if start:
+                args += ["--initial", start]
+            try:
+                # Generous: this is waiting on a person browsing their disk.
+                out = subprocess.run(args, capture_output=True, text=True,
+                                     timeout=900, cwd=str(HERE),
+                                     creationflags=getattr(subprocess,
+                                                           "CREATE_NO_WINDOW", 0))
+            except subprocess.TimeoutExpired:
+                return self._send(200, {"path": "", "error": "the dialog timed out"})
+            except OSError as ex:
+                return self._send(200, {"path": "", "error": str(ex)})
+            path = (out.stdout or "").strip()
+            if not path and out.returncode != 0:
+                return self._send(200, {"path": "",
+                                        "error": (out.stderr or "").strip()[:200]})
+            return self._send(200, {"path": path})     # empty = cancelled
+
         if u.path == "/api/scene":
             # Read a manifest so the render-prep panel can show what it is about
             # to work on, and refuse a path that is not one.

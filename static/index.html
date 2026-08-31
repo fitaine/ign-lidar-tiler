@@ -53,19 +53,6 @@
     overflow-wrap:anywhere}
   .hint,#p-info,.warn{overflow-wrap:anywhere}
   #log{overflow-x:auto}
-  #fb{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;
-    align-items:center;justify-content:center;z-index:50}
-  #fbbox{background:var(--panel);border:1px solid var(--line);border-radius:6px;
-    width:min(720px,92vw);max-height:80vh;display:flex;flex-direction:column}
-  #fbhead{padding:12px 14px;border-bottom:1px solid var(--line);
-    font-size:12px;color:var(--muted);overflow-wrap:anywhere}
-  #fblist{overflow-y:auto;padding:6px 0}
-  #fblist div{padding:6px 14px;cursor:pointer;font-size:12.5px}
-  #fblist div:hover{background:#2a303c}
-  #fbfoot{padding:10px 14px;border-top:1px solid var(--line);text-align:right}
-  #log{font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;
-    white-space:pre-wrap;background:#0f1116;border:1px solid var(--line);
-    border-radius:4px;padding:8px;max-height:220px;overflow-y:auto;color:#b9c1cf}
 </style>
 </head>
 <body>
@@ -191,21 +178,6 @@
   </div>
 </div>
 
-<div id="fb"><div id="fbbox">
-  <div id="fbhead"></div>
-  <div style="padding:8px 14px;border-bottom:1px solid var(--line)">
-    <div class="row">
-      <input id="fbpath" placeholder="or type / paste a path, then Enter">
-      <button id="fbgo" style="flex:0 0 auto">Go</button>
-    </div>
-    <div class="row" style="margin-top:8px" id="fbshort"></div>
-  </div>
-  <div id="fblist"></div>
-  <div id="fbfoot">
-    <button id="fbpick" style="display:none">Use this folder</button>
-    <button id="fbclose">Cancel</button>
-  </div>
-</div></div>
 <script>
 // Grid state is declared up here, ahead of the map and its load handler.
 // It used to sit below them, and because `let`/`const` are in a temporal dead
@@ -585,77 +557,41 @@ async function poll(jid){
 }
 
 // ── file browser ────────────────────────────────────────────────────────────
-// The browser will not reveal a real path from <input type=file>, so the
-// server lists directories instead. Pasted paths are cleaned server-side:
-// quotes from "Copy as path", and %20 from anything URL-encoded.
-let fbTarget = null, fbExt = "", fbDirs = false, fbPath = "";
-const fb = document.getElementById('fb');
-
-async function fbLoad(path){
-  const r = await fetch(`/api/browse?path=${encodeURIComponent(path||'')}` +
-                        `&ext=${encodeURIComponent(fbExt)}`);
-  const d = await r.json();
-  fbPath = d.path || "";
-  document.getElementById('fbhead').textContent = fbPath || "This computer";
-  const list = document.getElementById('fblist');
-  list.innerHTML = "";
-  const add = (label, fn, colour) => {
-    const el = document.createElement('div');
-    el.textContent = label;
-    if (colour) el.style.color = colour;
-    el.onclick = fn;
-    list.appendChild(el);
-  };
-  if (d.error) add(d.error + " — go back up, or type a path above",
-                   () => { if (d.parent) fbLoad(d.parent); }, "var(--warn)");
-  if (d.parent !== null && d.parent !== undefined)
-    add(".. up", () => fbLoad(d.parent));
-  for (const dir of d.dirs)
-    add("[ " + dir + " ]", () => fbLoad(fbPath ? fbPath + "\\" + dir : dir));
-  if (!fbDirs) for (const f of d.files)
-    add(f.name + "   " + (f.size/1e6).toFixed(1) + " MB", () => {
-      document.getElementById(fbTarget).value = fbPath + "\\" + f.name;
-      fb.style.display = 'none';
-    }, "var(--accent)");
-}
+// A real Windows dialog, opened by the server on this machine. The in-page
+// directory list it replaces was unpleasant to navigate, and a browser can
+// never reveal a real path from <input type=file>, so the page cannot do this
+// itself.
+const PICK = {
+  "p-scene": {kind: "file", ext: ".json",  title: "Choose scene.json"},
+  "p-blend": {kind: "file", ext: ".blend", title: "Choose the lit .blend"},
+  "out":     {kind: "dir",                 title: "Choose the output folder"}
+};
 
 document.querySelectorAll('[data-browse]').forEach(b => {
-  b.onclick = () => {
-    fbTarget = b.dataset.browse;
-    fbExt = b.dataset.ext || "";
-    fbDirs = b.dataset.dirs === "1";
-    document.getElementById('fbpick').style.display = fbDirs ? '' : 'none';
-    fb.style.display = 'flex';
-    const cur = document.getElementById(fbTarget).value.trim();
-    fbLoad(cur || "C:/Users/Tiphaine/Pictures/3D");
+  b.onclick = async () => {
+    const id = b.dataset.browse;
+    const field = document.getElementById(id);
+    const cfg = PICK[id] || {kind: "file"};
+    const label = b.textContent;
+    b.textContent = "…"; b.disabled = true;
+    try {
+      const r = await fetch('/api/pick', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          kind: cfg.kind, ext: cfg.ext || "", title: cfg.title || "",
+          start: field.value.trim() || "C:/Users/Tiphaine/Pictures/3D"
+        })
+      });
+      const d = await r.json();
+      if (d.error) alert(d.error);
+      else if (d.path) field.value = d.path;      // empty means cancelled
+    } catch (e) {
+      alert("Could not open the dialog: " + e.message);
+    } finally {
+      b.textContent = label; b.disabled = false;
+    }
   };
 });
-document.getElementById('fbgo').onclick =
-  () => fbLoad(document.getElementById('fbpath').value.trim());
-document.getElementById('fbpath').onkeydown = e => {
-  if (e.key === 'Enter') fbLoad(e.target.value.trim());
-};
-const SHORTCUTS = [
-  ["3D", "C:/Users/Tiphaine/Pictures/3D"],
-  ["LIDAR PROJECT", "C:/Users/Tiphaine/Pictures/3D/LIDAR PROJECT"],
-  ["Documents", "C:/Users/Tiphaine/Documents"],
-  ["This computer", ""]
-];
-{
-  const box = document.getElementById('fbshort');
-  for (const [label, path] of SHORTCUTS) {
-    const b = document.createElement('button');
-    b.textContent = label; b.style.fontSize = '11.5px';
-    b.onclick = () => fbLoad(path);
-    box.appendChild(b);
-  }
-}
-document.getElementById('fbclose').onclick = () => { fb.style.display = 'none'; };
-document.getElementById('fbpick').onclick = () => {
-  document.getElementById(fbTarget).value = fbPath;
-  fb.style.display = 'none';
-};
-fb.onclick = e => { if (e.target === fb) fb.style.display = 'none'; };
 
 setPanel('acq');
 setMode('nav');
