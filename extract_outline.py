@@ -1,0 +1,126 @@
+"""Export the footprint of the carved proxy from a .blend, for PDAL to crop with.
+
+Replaces extract_mask.py in the dense workflow. The mask was a 3D occupancy
+grid, and cropping the dense cloud against it deleted points that belonged: a
+dense point survived only where a sparse proxy point sat in the same 3 m cell,
+so on flat ground — where the proxy has one point every couple of metres and
+the Z of a dense point can fall into the neighbouring cell — it punched holes.
+
+The footprint carries the same intent without that damage. The proxy's outline
+is the shape; PDAL cuts the source tiles to it; every return inside is kept.
+Islands stay separate islands, holes cut in the middle stay holes.
+
+    blender -b "scene.blend" --python extract_outline.py -- \
+        --origin 987002.47,6497720.55,1639.35 --out carve.geojson
+
+The cell size is a rasterising step, not a filter: it decides how finely the
+outline follows the carve, nothing about which points survive.
+"""
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import numpy as np
+import bpy
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import outline as ol
+
+
+def parse_args():
+    argv = sys.argv
+    argv = argv[argv.index("--") + 1:] if "--" in argv else []
+    p = argparse.ArgumentParser()
+    p.add_argument("--object", default=None,
+                   help="Carved proxy. Omit to use the object tagged by the add-on")
+    p.add_argument("--cell", type=float, default=4.0,
+                   help="Rasterising step in metres (default 4.0). Larger follows "
+                        "the carve more loosely; it never removes points")
+    p.add_argument("--min-area", type=float, default=100.0,
+                   help="Drop islands smaller than this many square metres")
+    p.add_argument("--min-hole-area", type=float, default=64.0,
+                   help="Ignore holes smaller than this many square metres: "
+                        "below that it is the proxy's own spacing showing "
+                        "through, not something you cut (default 64, an 8x8 m "
+                        "hole survives)")
+    p.add_argument("--origin", required=True,
+                   help="X,Y,Z the proxy was recentred by, to return to Lambert 93")
+    p.add_argument("--out", required=True, help="Output .geojson")
+    return p.parse_args(argv)
+
+
+def pick_object(name):
+    if name:
+        ob = bpy.data.objects.get(name)
+        if ob is None:
+            names = [o.name for o in bpy.data.objects
+                     if o.type in ("MESH", "POINTCLOUD")]
+            sys.exit(f"Object {name!r} not found. Candidates: {names}")
+        return ob
+    tagged = [o for o in bpy.data.objects if o.get("ign_lidar_scene")]
+    if len(tagged) == 1:
+        print(f"[outline] using tagged object {tagged[0].name!r}", flush=True)
+        return tagged[0]
+    if not tagged:
+        clouds = [o for o in bpy.data.objects if o.type in ("MESH", "POINTCLOUD")
+                  and len(o.data.vertices if o.type == "MESH" else o.data.points) > 100_000]
+        if len(clouds) == 1:
+            print(f"[outline] using the only large cloud, {clouds[0].name!r}", flush=True)
+            return clouds[0]
+        sys.exit("pass --object, or tag the proxy with the IGN LiDAR Tiler add-on; "
+                 f"candidates: {[o.name for o in clouds]}")
+    sys.exit(f"several tagged objects, pass --object: {[o.name for o in tagged]}")
+
+
+def world_xy(ob):
+    """Proxy points in the PLY's own coordinates, translation included.
+
+    Her edits are vertex deletion plus at most one object translation, so the
+    object matrix has to be applied or the footprint lands beside the scene.
+    """
+    data = ob.data
+    if ob.type == "POINTCLOUD":
+        n = len(data.points)
+        co = np.empty(n * 3, dtype=np.float32)
+        data.points.foreach_get("position", co)
+    else:
+        n = len(data.vertices)
+        co = np.empty(n * 3, dtype=np.float32)
+        data.vertices.foreach_get("co", co)
+    co = co.reshape(n, 3).astype(np.float64)
+    m = np.array(ob.matrix_world, dtype=np.float64)
+    co = co @ m[:3, :3].T + m[:3, 3]
+    return co[:, :2], n
+
+
+def main():
+    a = parse_args()
+    ob = pick_object(a.object)
+    xy, n = world_xy(ob)
+    print(f"[outline] {ob.name!r}: {n:,} points", flush=True)
+
+    grid, grid_origin = ol.occupancy(xy, a.cell)
+    print(f"[outline] rasterised at {a.cell} m: {int(grid.sum()):,} cells", flush=True)
+
+    cell_area = a.cell * a.cell
+    groups = ol.group(ol.rings(grid),
+                      min_cells=max(1.0, a.min_area / cell_area),
+                      min_hole_cells=max(1.0, a.min_hole_area / cell_area))
+    if not groups:
+        sys.exit("no island survived; lower --min-area")
+
+    ox, oy, _ = (float(v) for v in a.origin.split(","))
+    gj = ol.to_geojson(groups, grid_origin, a.cell, (ox, oy))
+    Path(a.out).write_text(json.dumps(gj), encoding="utf-8")
+
+    total = sum(abs(ol.signed_area(g[0])) for g in groups) * a.cell * a.cell
+    holes = sum(abs(ol.signed_area(h)) for g in groups for h in g[1:]) * a.cell * a.cell
+    print(f"[outline] {len(groups)} island(s), {total/1e6:.2f} km2 "
+          f"less {holes/1e6:.2f} km2 of holes", flush=True)
+    print(ol.describe(groups, a.cell), flush=True)
+    print(f"[outline] wrote {a.out}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

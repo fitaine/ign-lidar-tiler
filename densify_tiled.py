@@ -40,6 +40,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import outline
 from densify import radius_for, suffix_for
 
 PDAL_EXE = r"C:\Program Files\QGIS 3.40.5\bin\pdal.exe"
@@ -49,13 +50,17 @@ PDAL_EXE = r"C:\Program Files\QGIS 3.40.5\bin\pdal.exe"
 ANCHOR = (800000.0, 6300000.0, 0.0)
 
 
-def polygon_wkt(ring):
-    """Closed ring of [x, y] to WKT POLYGON, for filters.crop."""
-    pts = list(ring)
-    if pts[0] != pts[-1]:
-        pts.append(pts[0])
-    inner = ", ".join(f"{x} {y}" for x, y in ((q[0], q[1]) for q in pts))
-    return f"POLYGON (({inner}))"
+def load_footprint(path):
+    """Read a carve footprint and return the WKT filters.crop wants.
+
+    Accepts a MultiPolygon, because a scene is not always one blob: Avoriaz is
+    a foreground, a middle ground and a background, and a carve can have holes
+    cut in the middle of it. Reading only the first ring, as this did, quietly
+    dropped both.
+    """
+    gj = json.loads(Path(path).read_text(encoding="utf-8"))
+    geom = gj["geometry"] if gj.get("type") == "Feature" else gj
+    return outline.multipolygon_wkt(geom)
 
 
 def tile_pipeline(tile, raster, voxel, origin, bounds, out_ply, polygon=None):
@@ -195,12 +200,9 @@ def main():
 
     wkt = None
     if a.polygon:
-        gj = json.loads(Path(a.polygon).read_text(encoding="utf-8"))
-        geom = gj["geometry"] if gj.get("type") == "Feature" else gj
-        if geom["type"] != "Polygon":
-            sys.exit("--polygon needs a single Polygon")
-        wkt = polygon_wkt(geom["coordinates"][0])
-        print(f"cropping to the drawn polygon ({len(geom['coordinates'][0])} vertices)",
+        wkt = load_footprint(a.polygon)
+        islands = wkt.count("((") - 1 if "MULTIPOLYGON" in wkt else 1
+        print(f"cropping to the carve footprint ({wkt.count('(') - 2} ring(s))",
               flush=True)
 
     parts = []

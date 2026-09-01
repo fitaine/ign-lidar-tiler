@@ -28,17 +28,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from densify_tiled import polygon_wkt
+from densify_tiled import load_footprint
 
 PDAL_EXE = r"C:\Program Files\QGIS 3.40.5\bin\pdal.exe"
-
-
-def load_polygon(path):
-    gj = json.loads(Path(path).read_text(encoding="utf-8"))
-    geom = gj["geometry"] if gj.get("type") == "Feature" else gj
-    if geom["type"] != "Polygon":
-        sys.exit("--polygon needs a single Polygon")
-    return polygon_wkt(geom["coordinates"][0])
 
 
 def count_in_polygon(tile, wkt, workdir):
@@ -81,7 +73,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--tiles", required=True, help="Folder of .copc.laz tiles")
-    p.add_argument("--polygon", required=True, help="carve.geojson from mask_to_polygon.py")
+    p.add_argument("--polygon", required=True, help="carve.geojson from extract_outline.py")
     p.add_argument("--target", type=int, default=150_000_000,
                    help="Point budget, i.e. what the card can render (default 150M)")
     a = p.parse_args()
@@ -89,7 +81,7 @@ def main():
     tiles = sorted(Path(a.tiles).glob("*.copc.laz"))
     if not tiles:
         sys.exit(f"no .copc.laz in {a.tiles}")
-    wkt = load_polygon(a.polygon)
+    wkt = load_footprint(a.polygon)
 
     total = 0
     with tempfile.TemporaryDirectory() as wd:

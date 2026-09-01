@@ -5,15 +5,19 @@ Stage 3 of the IGN LiDAR Tiler (see PLAN.md), as one command:
     python prepare_render.py --scene scenes/aiguille/scene.json \
         --blend "aiguille.blend" --target 150000000
 
-It runs the four steps in order and records the result in the manifest:
+It runs the steps in order and records the result in the manifest:
 
-  1. solve the voxel for the requested point count, by measurement
-  2. build the dense PLY tile by tile, over the whole footprint
-  3. check that its spheres actually touch
-  4. write the render .blend
+  1. export the carve footprint from the proxy: its outline, islands and holes
+  2. count the source points inside that footprint
+  3. under the budget, keep every return; over it, downsample to the budget
+  4. build the dense PLY tile by tile, cutting the tiles to the footprint
+  5. check that its spheres actually touch, and write the render .blend
 
-With --crop it also exports the carve mask from the .blend and crops the dense
-cloud to it. That is off by default: see the note on the flag.
+Nothing crops the dense cloud after the fact. The tiles are cut to the shape
+instead, so a point inside the carve is never dropped for being somewhere the
+sparse proxy happened not to sample.
+
+Use --whole-footprint to ignore the carve and process every tile.
 
 Every step is an existing script rather than a reimplementation, so the UI and
 the command line take exactly the same path.
@@ -100,27 +104,24 @@ def main():
                    help="Skip solving and use this voxel")
     p.add_argument("--multiplier", type=float, default=None,
                    help="Ball radius multiplier; defaults to the scene's")
-    p.add_argument("--cell", type=float, default=3.0,
-                   help="Carve mask cell size in metres (default 3.0)")
+    p.add_argument("--cell", type=float, default=4.0,
+                   help="Footprint rasterising step in metres (default 4.0). It "
+                        "decides how closely the outline follows the carve; it "
+                        "never removes points")
     p.add_argument("--object", default=None,
                    help="Cloud object; omit to use the add-on's tag")
     p.add_argument("--drop", action="append", default=[],
                    help="Delete this object from the render file. Repeatable.")
-    # Cropping to the carve is OFF by default, which is what lidar_pipeline.py
-    # has always done: downsample the whole footprint to the target and render
-    # that. The crop was meant to spend the budget on what the camera sees, but
-    # it only pays when the freed budget buys a finer voxel the data can
-    # actually fill. On La Plagne it could not: the crop threw away 86% of the
-    # points, the voxel went below the scan's own sampling to compensate, and
-    # the render came out as specks. Whole footprint at the target point count
-    # is the behaviour that has produced every good render so far.
+    # The proxy's outline decides what gets built, which is the whole point of
+    # carving a light cloud first. Use --whole-footprint to ignore the carve and
+    # process every tile, the way lidar_pipeline.py does.
+    p.add_argument("--whole-footprint", action="store_true",
+                   help="Ignore the carve and process the entire tile footprint")
     p.add_argument("--crop", action="store_true",
-                   help="Crop the dense cloud to the Blender carve. Only worth "
-                        "it when the freed budget buys a voxel the scan can "
-                        "still fill; check with find_closing_voxel.py first")
-    p.add_argument("--no-crop", action="store_true",
-                   help="Accepted for compatibility; cropping is already off "
-                        "by default")
+                   help="Accepted for compatibility; the carve footprint is "
+                        "used by default now")
+    p.add_argument("--no-crop", dest="whole_footprint", action="store_true",
+                   help="Alias for --whole-footprint")
     p.add_argument("--strip-volumes", action="store_true",
                    help="Remove volumetrics. Off by default: they are part of the "
                         "image, not overhead. Use this only when measuring what "
@@ -160,109 +161,93 @@ def main():
     print(f"[prep] origin  : {origin}", flush=True)
     print(f"[prep] blender : {blender}", flush=True)
 
-    # ── 2. carve mask ────────────────────────────────────────────────────────
-    mask = folder / f"{name}-carve-mask.npz"
-    if a.crop:
-        cmd = [blender, "-b", blend, "--python", HERE / "extract_mask.py", "--",
-               "--cell", a.cell, "--origin", origin, "--out", mask]
+    # ── 2. the carve footprint ───────────────────────────────────────────────
+    # The proxy's outline IS the shape: islands stay islands, holes cut in the
+    # middle stay holes. PDAL cuts the source tiles to it and every return
+    # inside is kept.
+    #
+    # This replaces a 3D occupancy mask that the dense cloud was cropped
+    # against afterwards. That mask kept a dense point only where a sparse
+    # proxy point sat in the same 3 m cell, so on flat ground — one proxy point
+    # every couple of metres, dense points whose Z fell in the neighbouring
+    # cell — it deleted points that belonged. Holes on flat surfaces was its
+    # signature. Nothing crops the dense cloud now; the tiles are cut instead.
+    footprint = folder / f"{name}-carve.geojson"
+    if not a.whole_footprint:
+        cmd = [blender, "-b", blend, "--python", HERE / "extract_outline.py", "--",
+               "--cell", a.cell, "--origin", origin, "--out", footprint]
         if a.object:
             cmd += ["--object", a.object]
-        run(cmd, "exporting the carve mask")
+        run(cmd, "exporting the carve footprint")
+        if not footprint.is_file():
+            sys.exit(f"[prep] expected {footprint} but it is not there")
 
-    # What survived the carve decides two things: how fine the voxel has to be
-    # to hit the target AFTER cropping, and which tiles are worth touching at
-    # all. On a 16 km2 footprint carved to 2 km2, ignoring this both misses the
-    # target eightfold and does eight times more work than needed.
-    coverage, mask_bbox = 1.0, None
-    if a.crop:
-        import numpy as np
-        m = np.load(mask, allow_pickle=True)
-        keys, mn, dims, mcell = m["keys"], m["mn"], m["dims"], float(m["cell"])
-        ix = keys // (dims[1] * dims[2])
-        iy = (keys // dims[2]) % dims[1]
-        planim = np.unique(ix * dims[1] + iy)
-        # Coverage must be measured against the area solve_voxel scales by,
-        # which is the whole tile footprint, not the carved cloud's own
-        # bounding box. Those are the same thing only when the cloud fills its
-        # footprint, which is exactly what an extended scene does not do.
-        kept_m2 = float(planim.size) * mcell * mcell
-        scene_m2 = max(len(man.get("tiles", [])), 1) * 1e6
-        coverage = min(1.0, kept_m2 / scene_m2)
-        # absolute bbox of what was kept, with a cell of slack
-        gx0, gx1 = int(ix.min()), int(ix.max()) + 1
-        gy0, gy1 = int(iy.min()), int(iy.max()) + 1
-        mask_bbox = (origin_xyz[0] + mn[0] + (gx0 - 1) * mcell,
-                     origin_xyz[1] + mn[1] + (gy0 - 1) * mcell,
-                     origin_xyz[0] + mn[0] + (gx1 + 1) * mcell,
-                     origin_xyz[1] + mn[1] + (gy1 + 1) * mcell)
-        area = (mask_bbox[2] - mask_bbox[0]) * (mask_bbox[3] - mask_bbox[1]) / 1e6
-        print(f"[prep] carve keeps {kept_m2/1e6:.2f} km2 of a "
-              f"{scene_m2/1e6:.0f} km2 footprint ({100*coverage:.1f}%), "
-              f"bounding {area:.2f} km2", flush=True)
+    # ── 3. count the source inside it, then decide ───────────────────────────
+    # Count first, downsample second. The old order solved a voxel for the
+    # budget over the whole footprint and cropped afterwards, so the budget was
+    # spent on ground the camera never sees.
+    voxel = a.voxel
+    if voxel is None and not a.whole_footprint:
+        out = run_capture(
+            [sys.executable, HERE / "plan_density.py", "--tiles", tiles_dir,
+             "--polygon", footprint, "--target", target],
+            f"counting the source inside the carve, against {target:,}")
+        counted = None
+        for line in out.splitlines():
+            if line.startswith("source points inside the carve:"):
+                counted = int(line.split(":")[1].strip().replace(",", ""))
+        if counted is None:
+            sys.exit("[prep] could not read a count from plan_density")
+        if counted <= target:
+            voxel = 0.0
+            print(f"[prep] {counted:,} points inside the carve, under the "
+                  f"{target:,} budget: keeping every return", flush=True)
+        else:
+            print(f"[prep] {counted:,} points inside the carve, over the "
+                  f"{target:,} budget: downsampling to it", flush=True)
 
-    # ── voxel, now that the carve is known ───────────────────────────────────
-    if a.voxel:
-        voxel = a.voxel
-        print(f"[prep] voxel {voxel} (given)", flush=True)
-    else:
+    if voxel is None:
+        coverage = 1.0
         cmd = [sys.executable, HERE / "solve_voxel.py",
                "--tiles", tiles_dir, "--target", target, "--multiplier", mult,
                "--coverage", f"{coverage:.6f}"]
-        n_tiles = len(list(tiles_dir.glob("*.copc.laz")))
-        print(f"[prep] the solve measures all {n_tiles} tiles, which takes a few "
-              f"minutes each; progress follows", flush=True)
-        n_tiles = len(list(tiles_dir.glob("*.copc.laz")))
-        print(f"[prep] the solve measures all {n_tiles} tiles at the coarse "
-              f"voxel; a few minutes each, progress follows", flush=True)
         out = run_capture(cmd, f"solving the voxel for {target:,} points")
-        voxel = None
         for line in out.splitlines():
             if line.strip().startswith("--voxel"):
                 voxel = float(line.split()[-1])
         if voxel is None:
             sys.exit("[prep] could not parse a voxel from solve_voxel")
-    radius = voxel / 2.0 * mult
+    elif a.voxel is not None:
+        print(f"[prep] voxel {voxel} (given)", flush=True)
 
-    # The carved area caps how many points can exist at all. Asking for more
-    # than the source holds over that area silently produces a cloud far below
-    # the target, so say it instead.
-    raw = man.get("raw_points")
-    if raw and a.crop and coverage < 1.0:
-        density = raw / scene_m2                      # raw returns per m2
-        ceiling = kept_m2 * density * 0.6             # unique voxels, not returns
-        native_spacing = (1.0 / density) ** 0.5
-        if voxel < native_spacing:
-            print(f"[prep] NOTE the solved voxel {voxel:.3f} m is finer than the "
-                  f"source spacing {native_spacing:.3f} m, so the target is not "
-                  f"reachable over this carve.", flush=True)
-            print(f"[prep]      {kept_m2/1e6:.2f} km2 at {density:.0f} returns/m2 "
-                  f"holds roughly {ceiling/1e6:.0f}M points at most. Carve a "
-                  f"larger area, or lower the target.", flush=True)
-
-    # ── dense PLY ────────────────────────────────────────────────────────────
+    # ── 4. dense PLY ─────────────────────────────────────────────────────────
     dense_name = f"{name}-dense"
     cmd = [sys.executable, HERE / "densify_tiled.py",
            "--tiles", tiles_dir, "--voxel", voxel, "--origin", origin,
            "--multiplier", mult, "--name", dense_name, "--out", folder]
     if raster and raster.is_file():
         cmd += ["--raster", raster]
-    if mask_bbox:
-        cmd += ["--bbox", ",".join(f"{v:.2f}" for v in mask_bbox)]
-    run(cmd, f"building the dense cloud at voxel {voxel:.3f}")
+    if not a.whole_footprint:
+        cmd += ["--polygon", footprint]
+    run(cmd, "building the dense cloud"
+             + (" with every return" if voxel <= 0 else f" at voxel {voxel:.3f}"))
 
-    suffix = f"{round(radius * 100):03d}"
-    dense = folder / f"{dense_name}-{suffix}.ply"
+    # With no downsampling the radius comes from the built cloud's own spacing,
+    # so the filename is the only place that knows it.
+    import check_fill
+    if voxel > 0:
+        radius = voxel / 2.0 * mult
+        dense = folder / f"{dense_name}-{round(radius * 100):03d}.ply"
+    else:
+        found = sorted(folder.glob(f"{dense_name}-[0-9][0-9][0-9].ply"),
+                       key=lambda p: p.stat().st_mtime)
+        if not found:
+            sys.exit(f"[prep] no {dense_name}-NNN.ply was written")
+        dense = found[-1]
+        radius = int(dense.stem.rsplit("-", 1)[1]) / 100.0
     if not dense.is_file():
         sys.exit(f"[prep] expected {dense} but it is not there")
-
-    # ── 4. crop, then the render file ────────────────────────────────────────
     final = dense
-    if a.crop:
-        cropped = folder / f"{dense_name}-{suffix}-carved.ply"
-        run([sys.executable, HERE / "crop_to_mask.py",
-             "--ply", dense, "--mask", mask, "--origin", origin, "--out", cropped],
-            "cropping to the carve mask")
-        final = cropped
 
     # Name the file after what it actually holds, not what was asked for. The
     # solver is a fit, so a 150M request can land at 172M, and a file called
@@ -330,7 +315,7 @@ def main():
     man["variants"] = [v for v in man["variants"] if v.get("file") != final.name]
     man["variants"].append({"role": "dense", "file": final.name, "voxel": voxel,
                             "radius": radius, "points": n_pts,
-                            "cropped_to_carve": a.crop})
+                            "cropped_to_carve": not a.whole_footprint})
     man.setdefault("renders", []).append({
         "date": date.today().isoformat(), "source_blend": str(blend),
         "render_blend": str(out_blend), "variant": final.name,

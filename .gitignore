@@ -58,3 +58,7 @@ ign_lidar_tiler_stop.png
 # the windowless server writes here
 server.log
 server.pid
+
+# python cache
+__pycache__/
+*.pyc

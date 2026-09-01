@@ -169,24 +169,18 @@ machinery, so this is a small addition once both exist.
    a coarse grid, a few metres per cell. This reproduces arbitrary carving,
    including interior holes, vertical cuts and ragged edges, without anyone
    having to describe the shape.
-4. Crop to the mask, colorize from the ortho, downsample to the dense voxel,
-   export the dense PLY recentred on the same origin.
+4. Cut the SOURCE TILES to that footprint, colorize from the ortho, keep every
+   return if the count is under budget, export the dense PLY recentred on the
+   same origin.
 
-   **Measured mask behaviour (2026-08-31).** The cell must be comfortably
-   coarser than the sparse cloud's point spacing, or cells inside the kept
-   region come up empty by chance and the mask punches holes in itself: at
-   3.4x spacing a synthetic test kept 74% where truth was 87%. `extract_mask.py`
-   warns below 4x. At an adequate cell the mask slightly over-keeps at the
-   edges, which is the safe direction. Default 3 m sits at 12-18x on real
-   scenes. End-to-end on Mont Aiguille (uncarved, so the mask should be a
-   no-op): 152,755,274 of 153,027,647 kept, **99.8%**. On La Plagne (carved)
-   the mask covers 39.7% of the footprint, matching an independent measurement
-   of 39.0%, and only **1.72% of the 3D grid volume**, since terrain is a thin
-   surface in a tall box. That volume figure is the saving the crop delivers.
-5. Write the render .blend: same scene, same lighting, same camera, cloud
-   replaced, radius set from the dense voxel and the multiplier, material and
-   GN modifier carried over, `Col` kept as `FLOAT_COLOR`.
-6. Append the variant and the render entry to `scene.json`.
+   **Why the mask was dropped (2026-09-01).** The occupancy mask was a 3D
+   grid: a dense point survived only where a sparse proxy point sat in the same
+   cell. On flat ground, where the proxy has one point every couple of metres
+   and a dense point's Z can fall into the neighbouring cell, it deleted points
+   that belonged, and the render came out full of holes. The planimetric checks
+   that said the mask was 98% solid could not see this, because the damage is
+   in Z. The footprint replaces it: the proxy's outline cuts the tiles, and
+   nothing filters the dense cloud afterwards.
 
 The output is explicitly **not for opening in the GUI**. The filename should
 say so.
@@ -290,8 +284,9 @@ driven from the command line before any UI exists, and it is where the
 uncertainty is. Stage 1's map is the more visible half but it automates work
 that already works.
 
-1. **3a** DONE. `densify.py` (dense PLY export), `extract_mask.py` +
-   `crop_to_mask.py` (occupancy mask crop).
+1. **3a** DONE. `densify.py` (dense PLY export), `extract_outline.py` +
+   `outline.py` (carve footprint: islands and holes), `plan_density.py`
+   (count the source inside it, and only downsample when over budget).
 2. **3b** DONE. `make_render_blend.py`, radius applied, volumetrics stripped,
    verified by production tiles.
 3. **3c** DONE. See the production budget above; working maximum 150M.
@@ -335,11 +330,14 @@ and use the Render prep panel, or the same thing on the command line:
 
     python prepare_render.py --scene scene.json --blend lit.blend --target 150000000
 
-which runs these four steps in order and records the result in the manifest:
+which runs these steps in order and records the result in the manifest:
 
-    blender -b scene.blend --python extract_mask.py -- --object <cloud> --cell 3.0 --out mask.npz
-    python densify_tiled.py --tiles <dir> --raster <tif> --voxel <v> --origin <x,y,z> --name <n> --out <dir>
-    python crop_to_mask.py --ply dense.ply --mask mask.npz --out dense-cropped.ply
-    blender -b scene.blend --python make_render_blend.py -- --ply dense-cropped.ply --radius <r> --strip-volumes --out render.blend
+    blender -b scene.blend --python extract_outline.py -- --origin <x,y,z> --out carve.geojson
+    python plan_density.py --tiles <dir> --polygon carve.geojson --target 150000000
+    python densify_tiled.py --tiles <dir> --raster <tif> --voxel <v or 0> --origin <x,y,z> --polygon carve.geojson --name <n> --out <dir>
+    blender -b scene.blend --python make_render_blend.py -- --ply dense.ply --radius <r> --out render.blend
+
+`--voxel 0` means keep every return, which is what the count decides when the
+source holds fewer points than the budget over the carved area.
 
 Stage 3 is not in the UI yet; it runs from the command line.

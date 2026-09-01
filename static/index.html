@@ -152,13 +152,13 @@
         spacing, or the mask pits itself and drops points it should keep.</div>
       <div class="check">
         <input type="checkbox" id="p-crop">
-        <label for="p-crop" style="margin:0">Crop to what I carved in Blender</label>
+        <label for="p-crop" style="margin:0">Ignore the carve, process every tile</label>
       </div>
-      <div class="hint">Off by default: the whole footprint is downsampled to
-        the target, which is what the old pipeline did and what every good
-        render came from. Cropping spends the budget on what the camera sees,
-        but only pays when the scan can fill a finer voxel &mdash; check with
-        find_closing_voxel.py before turning it on.</div>
+      <div class="hint">On by default: the proxy's outline cuts the source
+        tiles, so islands stay islands and holes you cut stay holes. Everything
+        inside is kept, and the cloud is only downsampled if it holds more
+        points than the budget. Tick to ignore the carve and process every
+        tile.</div>
       <div class="check">
         <input type="checkbox" id="p-vol">
         <label for="p-vol" style="margin:0">Remove volumetrics</label>
@@ -529,7 +529,7 @@ document.getElementById('p-go').onclick = async () => {
     blend: document.getElementById('p-blend').value.trim(),
     target: Math.round(parseFloat(document.getElementById('p-target').value) * 1e6),
     cell: parseFloat(document.getElementById('p-cell').value),
-    crop: document.getElementById('p-crop').checked,
+    whole_footprint: document.getElementById('p-crop').checked,
     strip_volumes: document.getElementById('p-vol').checked,
     out: document.getElementById('p-out').value.trim()
   };
