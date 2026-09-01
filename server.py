@@ -26,6 +26,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 import fetch_tiles
+import net
 from lambert93 import to_lambert, to_wgs84
 
 HERE = Path(__file__).resolve().parent
@@ -155,6 +156,22 @@ def job_worker():
 threading.Thread(target=job_worker, daemon=True).start()
 
 
+def append_log(job, line):
+    """Add a line, or update the one already there for the same download.
+
+    A download reports its progress several times a second, each update
+    arriving as its own line because it is written with a carriage return.
+    Appending all of them buried the log: one tile produced hundreds of lines.
+    One download is one line, rewritten in place until it finishes.
+    """
+    log = job["log"]
+    target = net.progress_target(line)
+    if target and log and net.progress_target(log[-1]) == target:
+        log[-1] = line
+    else:
+        log.append(line)
+
+
 def run_job(job_id, args, script="acquire.py"):
     with JOBS_LOCK:
         JOBS[job_id]["state"] = "running"
@@ -165,7 +182,7 @@ def run_job(job_id, args, script="acquire.py"):
         JOBS[job_id]["pid"] = proc.pid
     for line in proc.stdout:
         with JOBS_LOCK:
-            JOBS[job_id]["log"].append(line.rstrip())
+            append_log(JOBS[job_id], line.rstrip())
             JOBS[job_id]["log"] = JOBS[job_id]["log"][-400:]
     proc.wait()
     with JOBS_LOCK:

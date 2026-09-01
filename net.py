@@ -70,6 +70,38 @@ def head_size(url, timeout=60, retries=3):
     return 0
 
 
+PROGRESS_TAG = "[dl]"          # how a consumer recognises a progress update
+BAR_WIDTH = 24
+
+
+def progress_line(name, got, total, moved, seconds):
+    """One line for one download: bar, percent, size, speed, time left.
+
+    Tagged so a log can recognise successive updates for the same file and
+    replace the previous one instead of printing a new line per chunk. That is
+    what turned a single tile into hundreds of log lines: these are written
+    with a carriage return, and Python's line iteration treats \\r as a line
+    ending, so every update arrived at the server as its own line.
+    """
+    frac = (got / total) if total else 0.0
+    filled = int(round(frac * BAR_WIDTH))
+    bar = "#" * filled + "-" * (BAR_WIDTH - filled)
+    rate = (moved / seconds) if seconds > 0.2 else 0.0
+    left = ((total - got) / rate) if rate > 0 else 0.0
+    eta = f"{int(left) // 60}:{int(left) % 60:02d}" if rate > 0 and got < total else "--:--"
+    return (f"{PROGRESS_TAG} {name}  [{bar}] {100 * frac:5.1f}%  "
+            f"{got/1e6:7.1f}/{total/1e6:.1f} MB  "
+            f"{rate/1e6:5.1f} MB/s  eta {eta}")
+
+
+def progress_target(line):
+    """The filename a progress line refers to, or None if it is not one."""
+    if not line.startswith(PROGRESS_TAG):
+        return None
+    rest = line[len(PROGRESS_TAG):].strip()
+    return rest.split("  ")[0] or None
+
+
 def download(url, dest, expected=None, timeout=300, retries=DEFAULT_RETRIES,
              chunk=1 << 20, log=print, progress=True):
     """Download to `dest`, resuming and retrying. Returns the byte count.
@@ -104,6 +136,7 @@ def download(url, dest, expected=None, timeout=300, retries=DEFAULT_RETRIES,
                 total = int(r.headers.get("Content-Length", 0)) + pos
                 mode = "ab" if resuming else "wb"
                 got = pos
+                started = ticked = time.monotonic()
                 with open(part, mode) as f:
                     while True:
                         block = r.read(chunk)
@@ -111,11 +144,14 @@ def download(url, dest, expected=None, timeout=300, retries=DEFAULT_RETRIES,
                             break
                         f.write(block)
                         got += len(block)
-                        if progress and total:
-                            print(f"\r      {dest.name}  {got/1e6:8.1f} / "
-                                  f"{total/1e6:.1f} MB", end="", flush=True)
+                        if progress and total and time.monotonic() - ticked >= 0.25:
+                            ticked = time.monotonic()
+                            print(progress_line(dest.name, got, total,
+                                                got - pos, ticked - started),
+                                  end="\r", flush=True)
                 if progress and total:
-                    print()
+                    print(progress_line(dest.name, got, total, got - pos,
+                                        time.monotonic() - started), flush=True)
 
             size = part.stat().st_size
             if expected and size != expected:
