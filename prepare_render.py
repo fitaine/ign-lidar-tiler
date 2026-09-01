@@ -274,7 +274,11 @@ def main():
           f"touching, lattice {100*fill['fill']:.0f}% filled, "
           f"{100*fill['isolated']:.1f}% of points isolated -> {tag}", flush=True)
 
-    short = n_pts < 0.80 * target
+    # The target is only a promise when the solver was asked to hit it. Naming
+    # a voxel yourself says the density matters and the count is whatever the
+    # ground holds — refusing that would be the guard second-guessing a
+    # deliberate choice.
+    short = n_pts < 0.80 * target and not a.voxel
     if (tag == "DUST" or short) and not a.allow_sparse:
         print(f"[prep] STOP before writing the render file.", flush=True)
         if short:

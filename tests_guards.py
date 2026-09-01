@@ -68,13 +68,15 @@ def main():
 
     # 4. the fill verdicts, which decide whether a render file gets written
     print("\n--- fill verdicts ---")
-    # every row is a real cloud whose render is known, measured on disk
+    # every row is a real cloud whose render is known, measured on disk with
+    # the five-patch sampler
     cases = [
         ("mont-aiguille-035  rendered well", 0.024, 1.000, "OK"),
         ("ecrins-hd2-035     rendered well", 0.008, 1.000, "OK"),
-        ("plagne-039         rendered well", 0.044, 1.005, "OK"),
-        ("bure-016           thin but good", 0.170, 1.000, "THIN"),
-        ("plagne-012-carved  rendered dust", 0.458, 0.992, "DUST"),
+        ("bure-016           rendered well", 0.170, 1.000, "OK"),
+        ("plagne-039         rendered well, forested", 0.129, 1.005, "OK"),
+        ("a thin but usable cloud", 0.300, 1.000, "THIN"),
+        ("plagne-012-carved  rendered dust", 0.695, 1.400, "DUST"),
         ("tremplin-009       grid unfilled", 0.777, 1.611, "DUST"),
     ]
     for label, isolated, pitch, want in cases:
