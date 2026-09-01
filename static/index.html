@@ -570,7 +570,10 @@ async function poll(jid){
     // 1.2 s, so text could never be selected long enough to copy. Only touch
     // it when it has actually changed, and leave the scroll alone when the
     // user has scrolled up to read something.
-    const next = (j.log || []).join('\n');
+    // The [dl] tag is how the server recognises successive updates for the
+    // same download and rewrites one line instead of appending hundreds. It
+    // means nothing to a reader, so indent in its place.
+    const next = (j.log || []).map(l => l.replace(/^\[dl\] /, '   ')).join('\n');
     if (next !== log.textContent) {
       const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
       log.textContent = next;
