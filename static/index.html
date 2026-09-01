@@ -561,7 +561,10 @@ async function poll(jid){
   const tick = async () => {
     const r = await fetch('/api/job/' + jid);
     const j = await r.json();
-    st.textContent = j.state || '';
+    // "queued" alone does not say how long: show the position in the line
+    st.textContent = (j.state === 'queued' && j.ahead)
+      ? `queued, ${j.ahead} job${j.ahead > 1 ? 's' : ''} ahead`
+      : (j.state || '');
     // Reassigning textContent destroys any selection, and this polls every
     // 1.2 s, so text could never be selected long enough to copy. Only touch
     // it when it has actually changed, and leave the scroll alone when the

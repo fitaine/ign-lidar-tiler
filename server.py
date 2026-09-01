@@ -14,6 +14,7 @@ decimal places.
 """
 
 import json
+import queue
 import subprocess
 
 import winrun
@@ -118,6 +119,42 @@ def tiles_as_geojson(feats):
     return {"type": "FeatureCollection", "features": out}
 
 
+# One job at a time. Every request used to start its own thread, so two
+# clicks meant two acquires pulling from IGN at once, sharing the bandwidth and
+# the disk and turning a log into interleaved noise. A single worker draining a
+# FIFO keeps the order visible and the machine doing one thing properly.
+JOB_QUEUE = queue.Queue()
+
+
+def enqueue(job_id, args, script="acquire.py"):
+    """Accept a job and put it in line. Returns its position, 0 = starts now."""
+    with JOBS_LOCK:
+        waiting = sum(1 for j in JOBS.values() if j["state"] in ("queued", "running"))
+        JOBS[job_id] = {"id": job_id, "state": "queued", "log": [], "args": args,
+                        "script": script}
+        if waiting:
+            JOBS[job_id]["log"].append(
+                f"[server] waiting for {waiting} job(s) ahead of this one")
+    JOB_QUEUE.put((job_id, args, script))
+    return waiting
+
+
+def job_worker():
+    while True:
+        job_id, args, script = JOB_QUEUE.get()
+        try:
+            run_job(job_id, args, script)
+        except Exception as e:                      # a crash must not stop the line
+            with JOBS_LOCK:
+                JOBS[job_id]["state"] = "failed"
+                JOBS[job_id]["log"].append(f"[server] job crashed: {e}")
+        finally:
+            JOB_QUEUE.task_done()
+
+
+threading.Thread(target=job_worker, daemon=True).start()
+
+
 def run_job(job_id, args, script="acquire.py"):
     with JOBS_LOCK:
         JOBS[job_id]["state"] = "running"
@@ -198,6 +235,10 @@ class Handler(BaseHTTPRequestHandler):
             jid = u.path.rsplit("/", 1)[-1]
             with JOBS_LOCK:
                 job = JOBS.get(jid)
+                if job and job["state"] == "queued":
+                    # position in the line, so the UI can say more than "queued"
+                    order = [j["id"] for j in JOBS.values() if j["state"] == "queued"]
+                    job = dict(job, ahead=order.index(jid))
                 return self._send(200 if job else 404, job or {"error": "no such job"})
         return self._send(404, {"error": "not found"})
 
@@ -306,11 +347,8 @@ class Handler(BaseHTTPRequestHandler):
             if body.get("strip_volumes"):
                 args += ["--strip-volumes"]
             jid = uuid.uuid4().hex[:12]
-            with JOBS_LOCK:
-                JOBS[jid] = {"id": jid, "state": "queued", "log": [], "args": args}
-            threading.Thread(target=run_job, args=(jid, args, "prepare_render.py"),
-                             daemon=True).start()
-            return self._send(200, {"job": jid})
+            ahead = enqueue(jid, args, "prepare_render.py")
+            return self._send(200, {"job": jid, "ahead": ahead})
 
         if u.path == "/api/acquire":
             need = ("name", "out", "ring")
@@ -330,10 +368,8 @@ class Handler(BaseHTTPRequestHandler):
             if body.get("crop_to_shape"):
                 args += ["--crop-to-shape"]
             jid = uuid.uuid4().hex[:12]
-            with JOBS_LOCK:
-                JOBS[jid] = {"id": jid, "state": "queued", "log": [], "args": args}
-            threading.Thread(target=run_job, args=(jid, args), daemon=True).start()
-            return self._send(200, {"job": jid})
+            ahead = enqueue(jid, args)
+            return self._send(200, {"job": jid, "ahead": ahead})
 
         return self._send(404, {"error": "not found"})
 
