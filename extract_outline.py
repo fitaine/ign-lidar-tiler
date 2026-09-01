@@ -37,8 +37,11 @@ def parse_args():
     p.add_argument("--cell", type=float, default=4.0,
                    help="Rasterising step in metres (default 4.0). Larger follows "
                         "the carve more loosely; it never removes points")
-    p.add_argument("--min-area", type=float, default=100.0,
-                   help="Drop islands smaller than this many square metres")
+    p.add_argument("--min-area", type=float, default=1000.0,
+                   help="Drop islands smaller than this many square metres. The "
+                        "default keeps anything above roughly 30x30 m, which is "
+                        "far below a real island like Avoriaz's background and "
+                        "far above the scraps a carve leaves behind")
     p.add_argument("--min-hole-area", type=float, default=64.0,
                    help="Ignore holes smaller than this many square metres: "
                         "below that it is the proxy's own spacing showing "
@@ -104,11 +107,30 @@ def main():
     print(f"[outline] rasterised at {a.cell} m: {int(grid.sum()):,} cells", flush=True)
 
     cell_area = a.cell * a.cell
-    groups = ol.group(ol.rings(grid),
-                      min_cells=max(1.0, a.min_area / cell_area),
+    min_cells = max(1.0, a.min_area / cell_area)
+    loops = ol.rings(grid)
+    groups = ol.group(loops, min_cells=min_cells,
                       min_hole_cells=max(1.0, a.min_hole_area / cell_area))
     if not groups:
         sys.exit("no island survived; lower --min-area")
+
+    # Say what was thrown away and where. A fragment is usually a scrap of
+    # proxy a carve left behind, but whether it was meant is the artist's call,
+    # and "3 islands" for one carve plus two 200 m2 scraps is a useless report.
+    scraps = ol.dropped_fragments(loops, a.cell, min_cells)
+    if scraps:
+        main = max(groups, key=lambda g: abs(ol.signed_area(g[0])))[0]
+        cx = sum(p[0] for p in main) / len(main) * a.cell
+        cy = sum(p[1] for p in main) / len(main) * a.cell
+        print(f"[outline] dropped {len(scraps)} fragment(s) under "
+              f"{a.min_area:,.0f} m2:", flush=True)
+        for d in scraps[:5]:
+            km = ((d["at"][0] - cx) ** 2 + (d["at"][1] - cy) ** 2) ** 0.5 / 1000
+            print(f"    {ol.area_str(d['area'])}, {d['size'][0]:.0f} x "
+                  f"{d['size'][1]:.0f} m, {km:.2f} km from the main shape",
+                  flush=True)
+        if len(scraps) > 5:
+            print(f"    and {len(scraps) - 5} more", flush=True)
 
     ox, oy, _ = (float(v) for v in a.origin.split(","))
     gj = ol.to_geojson(groups, grid_origin, a.cell, (ox, oy))

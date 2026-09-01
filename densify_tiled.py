@@ -107,6 +107,20 @@ def tile_pipeline(tile, raster, voxel, origin, bounds, out_ply, polygon=None):
     return {"pipeline": stages}
 
 
+def is_placeholder(path, offset, origin):
+    """A lone point sitting at the Lambert origin, i.e. at -origin once shifted."""
+    import struct
+
+    with open(path, "rb") as f:
+        f.seek(offset)
+        raw = f.read(12)
+    if len(raw) < 12:
+        return False
+    x, y, z = struct.unpack("<3f", raw)
+    return (abs(x + origin[0]) < 1.0 and abs(y + origin[1]) < 1.0
+            and abs(z + origin[2]) < 1.0)
+
+
 def ply_count_and_offset(path):
     with open(path, "rb") as f:
         raw = f.read(4096)
@@ -148,6 +162,20 @@ def main():
         sys.exit(f"no .copc.laz in {tiles_dir}")
 
     keep_bbox = None
+    if not a.bbox and a.polygon:
+        # The footprint's own extent, so tiles it cannot touch are skipped.
+        # Besides the wasted minutes, PDAL writes ONE all-zero point when a
+        # tile ends up empty, and eight of those put points at Lambert (0,0,0)
+        # and stretched the cloud's bounding box across France.
+        gj = json.loads(Path(a.polygon).read_text(encoding="utf-8"))
+        geom = gj["geometry"] if gj.get("type") == "Feature" else gj
+        polys = ([geom["coordinates"]] if geom["type"] == "Polygon"
+                 else geom["coordinates"])
+        xs = [pt[0] for poly in polys for r in poly for pt in r]
+        ys = [pt[1] for poly in polys for r in poly for pt in r]
+        a.bbox = f"{min(xs)},{min(ys)},{max(xs)},{max(ys)}"
+        print(f"footprint extent: {min(xs):.0f},{min(ys):.0f} .. "
+              f"{max(xs):.0f},{max(ys):.0f}", flush=True)
     if a.bbox:
         keep_bbox = tuple(float(v) for v in a.bbox.split(","))
         if len(keep_bbox) != 4:
@@ -225,6 +253,26 @@ def main():
         print(f"[{i}/{len(tiles)}] {t.name}: {n:,} pts", flush=True)
         parts.append(part)
 
+    # PDAL's PLY writer emits one all-zero point rather than an empty file when
+    # a tile contributes nothing, and that point lands at Lambert (0,0,0) —
+    # thousands of kilometres from the scene. Belt as well as braces: the tile
+    # pre-filter above should mean this never fires, but a tile can also come
+    # out empty because the carve clips its corner.
+    real, dropped = [], 0
+    for part in parts:
+        n, off = ply_count_and_offset(part)
+        if n == 0:
+            dropped += 1
+            continue
+        if n == 1 and is_placeholder(part, off, origin):
+            dropped += 1
+            continue
+        real.append(part)
+    if dropped:
+        print(f"dropped {dropped} empty part(s) that PDAL filled with a "
+              f"placeholder point", flush=True)
+    parts = real
+
     total = 0
     for part in parts:
         n, _ = ply_count_and_offset(part)
@@ -250,10 +298,13 @@ def main():
                     fout.write(block)
 
     if not a.keep_parts:
-        for part in parts:
-            part.unlink(missing_ok=True)
-        for j in parts_dir.glob("*.json"):
-            j.unlink(missing_ok=True)
+        # Everything in the folder, not just the parts that were concatenated:
+        # a part dropped as a placeholder is still a file, and so is anything
+        # left behind by a run that was interrupted. Missing those made rmdir
+        # fail with "directory is not empty" and took the whole build down
+        # after the expensive part had already succeeded.
+        for f in parts_dir.iterdir():
+            f.unlink(missing_ok=True)
         parts_dir.rmdir()
 
     # With no downsampling there is no lattice, so voxel/2 says nothing about

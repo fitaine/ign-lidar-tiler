@@ -269,7 +269,10 @@ def main():
     # decided by whether the spheres meet, so measure that here, on the file
     # that is about to be rendered, while stopping is still cheap.
     import check_fill
-    fill = check_fill.measure(final, voxel)
+    # With every return kept there is no voxel to judge against, so the test is
+    # whether the spheres meet at the radius that was derived from the cloud's
+    # own spacing: a ball spans 2R, which is the lattice step it stands in for.
+    fill = check_fill.measure(final, voxel if voxel > 0 else radius * 2.0)
     tag, note = check_fill.verdict(fill)
     print(f"[prep] fill check: {fill['touching_mean']:.2f} of "
           f"{check_fill.SURFACE_SLOTS} neighbours "

@@ -193,13 +193,42 @@ def multipolygon_wkt(geom):
     return f"MULTIPOLYGON ({body})"
 
 
+def area_str(m2):
+    """Square metres until they are worth calling square kilometres.
+
+    A 240 m2 scrap printed as "0.000 km2" is a number that hides itself, which
+    is how two strays got reported as islands next to a 2.4 km2 carve.
+    """
+    return f"{m2:,.0f} m2" if m2 < 100_000 else f"{m2/1e6:.3f} km2"
+
+
 def describe(groups, cell):
     """One line per island, for a log that says what was actually kept."""
     out = []
     for i, g in enumerate(groups, 1):
         area = abs(signed_area(g[0])) * cell * cell
         holes = sum(abs(signed_area(h)) for h in g[1:]) * cell * cell
-        out.append(f"  island {i}: {area/1e6:.3f} km2"
-                   + (f" less {len(g)-1} hole(s) of {holes/1e6:.3f} km2"
+        out.append(f"  island {i}: {area_str(area)}"
+                   + (f" less {len(g)-1} hole(s) of {area_str(holes)}"
                       if len(g) > 1 else ""))
     return "\n".join(out)
+
+
+def dropped_fragments(loops, cell, min_cells):
+    """Outer rings too small to keep, with their size and where they sit.
+
+    Reported rather than silently discarded: a fragment is usually a scrap of
+    proxy a carve left behind, but whether it was meant is the artist's call.
+    """
+    out = []
+    for ring in loops:
+        area = signed_area(ring)
+        if area < 0 and abs(area) < min_cells:
+            xs = [p[0] for p in ring]
+            ys = [p[1] for p in ring]
+            out.append({"area": abs(area) * cell * cell,
+                        "size": ((max(xs) - min(xs)) * cell,
+                                 (max(ys) - min(ys)) * cell),
+                        "at": ((min(xs) + max(xs)) / 2 * cell,
+                               (min(ys) + max(ys)) / 2 * cell)})
+    return sorted(out, key=lambda d: -d["area"])
