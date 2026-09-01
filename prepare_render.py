@@ -270,7 +270,8 @@ def main():
     import check_fill
     fill = check_fill.measure(final, voxel)
     tag, note = check_fill.verdict(fill)
-    print(f"[prep] fill check: {fill['touching_mean']:.2f} of 6 neighbours "
+    print(f"[prep] fill check: {fill['touching_mean']:.2f} of "
+          f"{check_fill.SURFACE_SLOTS} neighbours "
           f"touching, lattice {100*fill['fill']:.0f}% filled, "
           f"{100*fill['isolated']:.1f}% of points isolated -> {tag}", flush=True)
 
