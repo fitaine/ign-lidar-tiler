@@ -199,6 +199,38 @@ def measure(path, voxel, points=4_000_000, window=None, windows=5):
     }
 
 
+def measured_spacing(path, points=4_000_000, windows=5, window=25.0):
+    """How far apart the points really are, pooled over patches.
+
+    For a cloud built without downsampling there is no voxel to derive a radius
+    from, and the scan's own spacing is what the balls have to span. Returns the
+    median gap and the gap that 90% of points fall under - the first is where
+    spheres merely touch their closest neighbour, the second is what closes the
+    surface.
+    """
+    from scipy.spatial import cKDTree
+
+    path = Path(path)
+    n_points, offset, dtype = read_header(path)
+    per_window = max(200_000, points // max(windows, 1))
+    pooled = []
+    for i in range(max(windows, 1)):
+        xyz = sample(path, per_window, n_points, offset, dtype,
+                     (i + 0.5) / max(windows, 1))
+        centre = xyz[len(xyz) // 2]
+        w = xyz[np.all(np.abs(xyz - centre) < window, axis=1)]
+        if len(w) < 1000:
+            continue
+        pooled.append(cKDTree(w).query(w, k=2)[0][:, 1])
+    if not pooled:
+        sys.exit(f"{path.name}: no patch held enough points to measure spacing")
+    nn = np.concatenate(pooled)
+    return {"median": float(np.median(nn)),
+            "closes_75": float(np.percentile(nn, 75)),
+            "closes_90": float(np.percentile(nn, 90)),
+            "points": n_points}
+
+
 def verdict(r):
     """Judge on isolation and pitch, the two things that decide the look."""
     if r.get("pitch_ratio", 1.0) > PITCH_BAD:

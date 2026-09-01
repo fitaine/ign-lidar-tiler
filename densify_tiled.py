@@ -62,19 +62,36 @@ def tile_pipeline(tile, raster, voxel, origin, bounds, out_ply, polygon=None):
     ox, oy, oz = origin
     (minx, miny, maxx, maxy) = bounds
     ax, ay, az = ANCHOR
-    stages = [
+    stages = []
+    # The anchor exists only to pin the voxel grid identically across tiles, so
+    # without downsampling there is no reason to add a point that then has to be
+    # removed again.
+    if voxel > 0:
         # First reader wins: this pins the voxel grid identically for every tile.
-        {"type": "readers.faux", "mode": "constant", "count": 1,
-         "bounds": f"([{ax},{ax}],[{ay},{ay}],[{az},{az}])"},
+        stages.append({"type": "readers.faux", "mode": "constant", "count": 1,
+                       "bounds": f"([{ax},{ax}],[{ay},{ay}],[{az},{az}])"})
+    stages += [
         {"type": "readers.copc", "filename": str(tile)},
         {"type": "filters.merge"},
-        {"type": "filters.voxeldownsize", "cell": voxel},
-        # Drops the anchor along with anything outside the scene. When a
-        # polygon is given this is also the crop-to-shape step, trading one
-        # extra pass for a clean edge instead of a 1 km staircase.
-        ({"type": "filters.crop", "polygon": polygon} if polygon else
-         {"type": "filters.crop", "bounds": f"([{minx},{maxx}],[{miny},{maxy}])"}),
     ]
+    # voxel 0 means take every return: when the source holds fewer points than
+    # the budget over the area being kept, downsampling only throws away
+    # measurements that were paid for. Nothing to pin a grid to either, so the
+    # anchor is only there to be cropped away again.
+    if voxel > 0:
+        stages.append({"type": "filters.voxeldownsize", "cell": voxel})
+    stages += [
+        # Drops the anchor along with anything outside the scene. The bounds
+        # crop runs even when a polygon is given: a polygon crop was observed
+        # letting the anchor through, and eight survivors at Lambert (0,0,0)
+        # stretched the cloud's bounding box by 6 500 km, which costs nothing
+        # in points and everything in a viewport.
+        {"type": "filters.crop", "bounds": f"([{minx},{maxx}],[{miny},{maxy}])"},
+    ]
+    if polygon:
+        # The shape itself, so the edge follows the carve instead of a 1 km
+        # staircase along the tile grid.
+        stages.append({"type": "filters.crop", "polygon": polygon})
     if raster:
         stages.append({"type": "filters.colorization", "raster": str(raster)})
     stages.append({"type": "filters.transformation",
@@ -236,6 +253,21 @@ def main():
         for j in parts_dir.glob("*.json"):
             j.unlink(missing_ok=True)
         parts_dir.rmdir()
+
+    # With no downsampling there is no lattice, so voxel/2 says nothing about
+    # how far apart the points actually are. Measure the cloud instead and name
+    # the file after that, so the radius still comes off the filename.
+    if a.voxel <= 0:
+        import check_fill
+        spacing = check_fill.measured_spacing(out_ply)
+        radius = spacing["closes_90"] / 2.0 * a.multiplier
+        named = out_dir / f"{a.name}-{suffix_for(radius)}.ply"
+        if named != out_ply:
+            out_ply.replace(named)
+            out_ply = named
+        print(f"\nno downsampling: measured spacing median "
+              f"{spacing['median']:.3f} m, 90% of gaps under "
+              f"{spacing['closes_90']:.3f} m", flush=True)
 
     print(f"wrote {out_ply.name}  ({out_ply.stat().st_size/1e9:.2f} GB)")
     print(f"set Mesh to Points -> Radius = {radius:.4f}")

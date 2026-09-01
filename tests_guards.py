@@ -39,6 +39,40 @@ def run_verify(sampling, target_v, effective_target, allow=False):
         multiplier=1.0, allow_saturated=allow)
 
 
+def check_pipeline_shape():
+    """The PDAL stages densify_tiled builds, which decide what lands in the PLY.
+
+    Two things went wrong here in practice and both are cheap to pin down: the
+    grid anchor survived a polygon crop and stretched the cloud's bounding box
+    by 6 500 km, and voxel 0 has no grid to anchor in the first place.
+    """
+    import densify_tiled
+
+    print("\n--- PDAL stages ---")
+    failures = 0
+    poly = "POLYGON ((0 0, 1 0, 1 1, 0 0))"
+
+    native = densify_tiled.tile_pipeline("t.copc.laz", None, 0, (1.0, 2.0, 3.0),
+                                         (0, 0, 10, 10), "out.ply", polygon=poly)
+    kinds = [s["type"] for s in native["pipeline"]]
+    failures += check("voxel 0 adds no grid anchor", "readers.faux" not in kinds)
+    failures += check("voxel 0 does not downsample",
+                      "filters.voxeldownsize" not in kinds)
+
+    for label, voxel in (("voxel 0", 0), ("voxel 0.4", 0.4)):
+        p = densify_tiled.tile_pipeline("t.copc.laz", None, voxel, (1.0, 2.0, 3.0),
+                                        (0, 0, 10, 10), "out.ply", polygon=poly)
+        crops = [s for s in p["pipeline"] if s["type"] == "filters.crop"]
+        ok = (len(crops) == 2 and "bounds" in crops[0] and "polygon" in crops[1])
+        failures += check(f"{label} crops by bounds before polygon", ok)
+
+    plain = densify_tiled.tile_pipeline("t.copc.laz", None, 0.4, (1.0, 2.0, 3.0),
+                                        (0, 0, 10, 10), "out.ply")
+    crops = [s for s in plain["pipeline"] if s["type"] == "filters.crop"]
+    failures += check("no polygon means one bounds crop", len(crops) == 1)
+    return failures
+
+
 def check(label, ok):
     print(f"{'ok  ' if ok else 'FAIL'}  {label}")
     return 0 if ok else 1
@@ -82,6 +116,8 @@ def main():
     for label, isolated, pitch, want in cases:
         tag, _ = check_fill.verdict({"isolated": isolated, "pitch_ratio": pitch})
         failures += check(f"{label} -> {tag}", tag == want)
+
+    failures += check_pipeline_shape()
 
     print("\nall good" if not failures else f"\n{failures} failure(s)")
     return 1 if failures else 0
