@@ -151,11 +151,14 @@
       <div class="hint">Must be well coarser than the sparse cloud's point
         spacing, or the mask pits itself and drops points it should keep.</div>
       <div class="check">
-        <input type="checkbox" id="p-nocrop">
-        <label for="p-nocrop" style="margin:0">Keep the whole footprint</label>
+        <input type="checkbox" id="p-crop">
+        <label for="p-crop" style="margin:0">Crop to what I carved in Blender</label>
       </div>
-      <div class="hint">Off, the dense cloud is cropped to what survived your
-        carving in Blender.</div>
+      <div class="hint">Off by default: the whole footprint is downsampled to
+        the target, which is what the old pipeline did and what every good
+        render came from. Cropping spends the budget on what the camera sees,
+        but only pays when the scan can fill a finer voxel &mdash; check with
+        find_closing_voxel.py before turning it on.</div>
       <div class="check">
         <input type="checkbox" id="p-vol">
         <label for="p-vol" style="margin:0">Remove volumetrics</label>
@@ -526,7 +529,7 @@ document.getElementById('p-go').onclick = async () => {
     blend: document.getElementById('p-blend').value.trim(),
     target: Math.round(parseFloat(document.getElementById('p-target').value) * 1e6),
     cell: parseFloat(document.getElementById('p-cell').value),
-    no_crop: document.getElementById('p-nocrop').checked,
+    crop: document.getElementById('p-crop').checked,
     strip_volumes: document.getElementById('p-vol').checked,
     out: document.getElementById('p-out').value.trim()
   };

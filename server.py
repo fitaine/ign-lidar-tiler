@@ -299,8 +299,8 @@ class Handler(BaseHTTPRequestHandler):
                 args += ["--drop", d]
             if body.get("out"):
                 args += ["--out", clean_path(body["out"])]
-            if body.get("no_crop"):
-                args += ["--no-crop"]
+            if body.get("crop"):
+                args += ["--crop"]
             if body.get("strip_volumes"):
                 args += ["--strip-volumes"]
             jid = uuid.uuid4().hex[:12]

@@ -8,9 +8,12 @@ Stage 3 of the IGN LiDAR Tiler (see PLAN.md), as one command:
 It runs the four steps in order and records the result in the manifest:
 
   1. solve the voxel for the requested point count, by measurement
-  2. export the carve mask from the .blend
-  3. build the dense PLY tile by tile
-  4. crop it to the mask, then write the render .blend
+  2. build the dense PLY tile by tile, over the whole footprint
+  3. check that its spheres actually touch
+  4. write the render .blend
+
+With --crop it also exports the carve mask from the .blend and crops the dense
+cloud to it. That is off by default: see the note on the flag.
 
 Every step is an existing script rather than a reimplementation, so the UI and
 the command line take exactly the same path.
@@ -103,8 +106,21 @@ def main():
                    help="Cloud object; omit to use the add-on's tag")
     p.add_argument("--drop", action="append", default=[],
                    help="Delete this object from the render file. Repeatable.")
+    # Cropping to the carve is OFF by default, which is what lidar_pipeline.py
+    # has always done: downsample the whole footprint to the target and render
+    # that. The crop was meant to spend the budget on what the camera sees, but
+    # it only pays when the freed budget buys a finer voxel the data can
+    # actually fill. On La Plagne it could not: the crop threw away 86% of the
+    # points, the voxel went below the scan's own sampling to compensate, and
+    # the render came out as specks. Whole footprint at the target point count
+    # is the behaviour that has produced every good render so far.
+    p.add_argument("--crop", action="store_true",
+                   help="Crop the dense cloud to the Blender carve. Only worth "
+                        "it when the freed budget buys a voxel the scan can "
+                        "still fill; check with find_closing_voxel.py first")
     p.add_argument("--no-crop", action="store_true",
-                   help="Skip the carve mask and keep the whole footprint")
+                   help="Accepted for compatibility; cropping is already off "
+                        "by default")
     p.add_argument("--strip-volumes", action="store_true",
                    help="Remove volumetrics. Off by default: they are part of the "
                         "image, not overhead. Use this only when measuring what "
@@ -146,7 +162,7 @@ def main():
 
     # ── 2. carve mask ────────────────────────────────────────────────────────
     mask = folder / f"{name}-carve-mask.npz"
-    if not a.no_crop:
+    if a.crop:
         cmd = [blender, "-b", blend, "--python", HERE / "extract_mask.py", "--",
                "--cell", a.cell, "--origin", origin, "--out", mask]
         if a.object:
@@ -158,7 +174,7 @@ def main():
     # all. On a 16 km2 footprint carved to 2 km2, ignoring this both misses the
     # target eightfold and does eight times more work than needed.
     coverage, mask_bbox = 1.0, None
-    if not a.no_crop:
+    if a.crop:
         import numpy as np
         m = np.load(mask, allow_pickle=True)
         keys, mn, dims, mcell = m["keys"], m["mn"], m["dims"], float(m["cell"])
@@ -211,7 +227,7 @@ def main():
     # than the source holds over that area silently produces a cloud far below
     # the target, so say it instead.
     raw = man.get("raw_points")
-    if raw and not a.no_crop and coverage < 1.0:
+    if raw and a.crop and coverage < 1.0:
         density = raw / scene_m2                      # raw returns per m2
         ceiling = kept_m2 * density * 0.6             # unique voxels, not returns
         native_spacing = (1.0 / density) ** 0.5
@@ -241,7 +257,7 @@ def main():
 
     # ── 4. crop, then the render file ────────────────────────────────────────
     final = dense
-    if not a.no_crop:
+    if a.crop:
         cropped = folder / f"{dense_name}-{suffix}-carved.ply"
         run([sys.executable, HERE / "crop_to_mask.py",
              "--ply", dense, "--mask", mask, "--origin", origin, "--out", cropped],
@@ -314,7 +330,7 @@ def main():
     man["variants"] = [v for v in man["variants"] if v.get("file") != final.name]
     man["variants"].append({"role": "dense", "file": final.name, "voxel": voxel,
                             "radius": radius, "points": n_pts,
-                            "cropped_to_carve": not a.no_crop})
+                            "cropped_to_carve": a.crop})
     man.setdefault("renders", []).append({
         "date": date.today().isoformat(), "source_blend": str(blend),
         "render_blend": str(out_blend), "variant": final.name,
