@@ -18,7 +18,10 @@
      the chain collapsed to 0 and the map never initialised. */
   #app{position:fixed;inset:0;display:flex}
   #map{flex:1;min-width:0}
-  #side{width:340px;min-width:340px;background:var(--panel);
+  /* Wide enough for a full Windows path and a log line without wrapping, and
+     it grows with the screen instead of staying at a laptop width. The map
+     keeps the rest; min-width stops it collapsing on a small display. */
+  #side{width:clamp(340px, 26vw, 620px);min-width:340px;background:var(--panel);
     border-left:1px solid var(--line);display:flex;flex-direction:column;
     overflow-y:auto;overflow-x:hidden}
   /* Long Windows paths and tile names used to push the panel sideways. */
@@ -54,9 +57,14 @@
   .hint,#p-info,.warn{overflow-wrap:anywhere}
   /* textContent with newlines in it needs pre-wrap, or the whole job log
      renders as one paragraph. It did, for months. */
+  /* The last line used to sit flush against the bottom edge, which reads as
+     "the log is cut off" when it is simply finished. The padding gives it
+     somewhere to end, and scroll-padding keeps auto-scroll from parking the
+     newest line under that edge. */
   #log{white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace;
     font-size:11.5px;line-height:1.45;max-height:46vh;overflow-y:auto;
-    overflow-x:auto;overflow-wrap:anywhere;tab-size:2}
+    overflow-x:auto;overflow-wrap:anywhere;tab-size:2;
+    padding-bottom:28px;scroll-padding-bottom:28px}
 </style>
 </head>
 <body>

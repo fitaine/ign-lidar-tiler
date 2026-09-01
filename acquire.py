@@ -24,6 +24,7 @@ from datetime import date
 from pathlib import Path
 
 import fetch_tiles
+import net
 from densify import radius_for, suffix_for
 
 PDAL_EXE = r"C:\Program Files\QGIS 3.40.5\bin\pdal.exe"
@@ -109,18 +110,46 @@ def main():
     if not a.skip_download:
         urls = [f["properties"]["url"] for f in feats]
         sizes = fetch_tiles.head_sizes(urls)
-        failed = []
+        total_bytes = sum(s for s in sizes if s)
+        already = sum(1 for url, s in zip(urls, sizes)
+                      if s and (tiles_dir / Path(url.split("?")[0]).name).is_file()
+                      and (tiles_dir / Path(url.split("?")[0]).name).stat().st_size == s)
+        if total_bytes:
+            print(f"[acquire] {total_bytes/1e9:.1f} GB to fetch from IGN"
+                  + (f", {already} tile(s) already here" if already else ""),
+                  flush=True)
+        print(f"[acquire] downloads resume where they stop, so it is safe to "
+              f"close this and run it again", flush=True)
+
+        failed, done_bytes = [], 0
         for i, (url, size) in enumerate(zip(urls, sizes), 1):
             dest = tiles_dir / Path(url.split("?")[0]).name
-            print(f"[acquire]   [{i}/{len(urls)}] {dest.name}", flush=True)
+            left = ((total_bytes - done_bytes) / 1e9) if total_bytes else 0
+            print(f"[acquire]   [{i}/{len(urls)}] {dest.name}"
+                  + (f"   {size/1e6:.0f} MB, {left:.1f} GB still to go"
+                     if size else ""), flush=True)
             try:
-                fetch_tiles.download(url, dest, expected=size or None)
+                # net.download, not fetch_tiles.download: it resumes from a
+                # .part file, retries the failures IGN actually produces, and
+                # skips a tile that is already complete. The two had drifted
+                # apart and acquire was still calling the old one, which does
+                # not even take `expected` - every tile "GAVE UP" instantly.
+                net.download(url, dest, expected=size or None,
+                             log=lambda m: print(f"[acquire]   {m}", flush=True))
+                done_bytes += size or 0
             except Exception as e:
-                print(f"[acquire]      GAVE UP: {e}", flush=True)
+                print(f"[acquire]      could not fetch this one: {e}", flush=True)
                 failed.append(dest.name)
+
         if failed:
-            sys.exit(f"[acquire] {len(failed)} tiles could not be downloaded: "
-                     f"{failed}. Re-run the same command to resume.")
+            print(f"\n[acquire] {len(urls) - len(failed)} of {len(urls)} tiles are "
+                  f"here. {len(failed)} did not arrive:", flush=True)
+            for name in failed:
+                print(f"[acquire]     {name}", flush=True)
+            sys.exit("[acquire] Run the same job again and it will pick up where "
+                     "it left off - finished tiles are skipped and half-finished "
+                     "ones continue. If they keep failing, IGN is probably down.")
+        print(f"[acquire] all {len(urls)} tiles are here", flush=True)
 
     tiles = sorted(tiles_dir.glob("*.copc.laz"))
     if not tiles:

@@ -108,23 +108,19 @@ def head_sizes(urls, workers=12):
         return list(ex.map(head_size, urls))
 
 
-def download(url, dest):
-    tmp = dest.with_suffix(dest.suffix + ".part")
-    req = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(req, timeout=300) as r, open(tmp, "wb") as f:
-        total = int(r.headers.get("Content-Length", 0))
-        got = 0
-        while True:
-            block = r.read(1 << 20)
-            if not block:
-                break
-            f.write(block)
-            got += len(block)
-            if total:
-                print(f"\r  {dest.name}  {got/1e6:7.1f} / {total/1e6:.1f} MB", end="", flush=True)
-    print()
-    tmp.replace(dest)
-    return dest.stat().st_size
+def download(url, dest, **kwargs):
+    """Fetch one tile. Thin wrapper over net.download, which owns the logic.
+
+    There used to be a second implementation here: no resume, no retry, and a
+    signature that did not accept `expected`. acquire.py called this one, so
+    every tile failed instantly with "download() got an unexpected keyword
+    argument 'expected'" - a whole 25-tile job lost to two functions with the
+    same name drifting apart. One implementation now, and this name still
+    works for anything that already calls it.
+    """
+    import net
+
+    return net.download(url, dest, **kwargs)
 
 
 def main():
