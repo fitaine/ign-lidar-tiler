@@ -23,6 +23,8 @@ against a measured 0.49 that produced 153.0M points.
 import argparse
 import json
 import subprocess
+
+import winrun
 import sys
 import tempfile
 from math import log
@@ -32,7 +34,7 @@ PDAL_EXE = r"C:\Program Files\QGIS 3.40.5\bin\pdal.exe"
 
 
 def summary(path):
-    r = subprocess.run([PDAL_EXE, "info", "--summary", str(path)],
+    r = winrun.run([PDAL_EXE, "info", "--summary", str(path)],
                        capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit(f"pdal info failed on {path}: {r.stderr[:400]}")
@@ -47,7 +49,7 @@ def count_after_downsample(tile, voxel, workdir):
         {"type": "filters.voxeldownsize", "cell": voxel},
         {"type": "writers.las", "filename": str(out), "compression": "laszip"},
     ]}), encoding="utf-8")
-    r = subprocess.run([PDAL_EXE, "pipeline", str(pipe)], capture_output=True, text=True)
+    r = winrun.run([PDAL_EXE, "pipeline", str(pipe)], capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit(f"pdal failed at voxel {voxel}: {r.stderr[:400]}")
     n = summary(out)["num_points"]

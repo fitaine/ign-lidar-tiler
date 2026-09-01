@@ -37,6 +37,8 @@ voxel rather than one. Not worth a dedup pass, but worth knowing it is there.
 import argparse
 import json
 import subprocess
+
+import winrun
 import sys
 from pathlib import Path
 
@@ -182,7 +184,7 @@ def main():
             sys.exit("--bbox needs minx,miny,maxx,maxy")
         kept = []
         for t in tiles:
-            r = subprocess.run([PDAL_EXE, "info", "--summary", str(t)],
+            r = winrun.run([PDAL_EXE, "info", "--summary", str(t)],
                                capture_output=True, text=True)
             if r.returncode != 0:
                 continue
@@ -211,7 +213,7 @@ def main():
     minx = miny = float("inf")
     maxx = maxy = float("-inf")
     for t in tiles:
-        r = subprocess.run([PDAL_EXE, "info", "--summary", str(t)],
+        r = winrun.run([PDAL_EXE, "info", "--summary", str(t)],
                            capture_output=True, text=True)
         if r.returncode != 0:
             sys.exit(f"pdal info failed on {t.name}")
@@ -245,7 +247,7 @@ def main():
         pipe.write_text(json.dumps(
             tile_pipeline(t, a.raster, a.voxel, origin, bounds, part, wkt), indent=2),
             encoding="utf-8")
-        r = subprocess.run([PDAL_EXE, "pipeline", str(pipe)],
+        r = winrun.run([PDAL_EXE, "pipeline", str(pipe)],
                            capture_output=True, text=True)
         if r.returncode != 0:
             sys.exit(f"pdal failed on {t.name}: {r.stderr[-600:]}")

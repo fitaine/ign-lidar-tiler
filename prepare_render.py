@@ -30,6 +30,9 @@ import argparse
 import json
 import os
 import subprocess
+import time
+
+import winrun
 import sys
 from datetime import date
 from pathlib import Path
@@ -62,13 +65,59 @@ def find_blender(explicit=None):
     sys.exit("could not find blender.exe; pass --blender-exe or set BLENDER_EXE")
 
 
+# The log gets read while a job is running, so it has to say where it is
+# without the reader reconstructing it: every external command announces itself
+# as a numbered step and reports how long it took. The steps are not numbered
+# out of a total, because how many there are depends on the run — counting is
+# skipped for --whole-footprint, and the voxel solve only happens over budget.
+_step = [0]
+_t0 = [None]
+
+
+def step(label):
+    """Announce a step and start its clock."""
+    _step[0] += 1
+    _t0[0] = time.time()
+    bar = "-" * 62
+    print("", flush=True)
+    print("[prep] " + bar, flush=True)
+    print("[prep] STEP {}  {}".format(_step[0], label), flush=True)
+    print("[prep] " + bar, flush=True)
+
+
+def done(note=""):
+    """Close the current step with its duration."""
+    if _t0[0] is None:
+        return
+    el = time.time() - _t0[0]
+    el = "{:.0f}s".format(el) if el < 90 else "{:.1f} min".format(el / 60)
+    print("[prep] step {} done in {}{}".format(
+        _step[0], el, "  " + note if note else ""), flush=True)
+    _t0[0] = None
+
+
+def shown(cmd):
+    """The command, short enough to read: exe and script by name, not by path."""
+    out = []
+    for i, c in enumerate(str(x) for x in cmd):
+        # exe and script are paths; everything after them is an argument
+        out.append(Path(c).name if (i < 2 and Path(c).name != c) else c)
+    return " ".join(out)
+
+
+def full(cmd):
+    return " ".join('"' + str(c) + '"' if " " in str(c) else str(c) for c in cmd)
+
+
 def run(cmd, label):
-    print(f"\n[prep] === {label} ===", flush=True)
-    print("[prep] " + " ".join(f'"{c}"' if " " in str(c) else str(c) for c in cmd),
-          flush=True)
-    r = subprocess.run([str(c) for c in cmd])
+    step(label)
+    print("[prep] $ " + shown(cmd), flush=True)
+    r = winrun.stream(cmd)
     if r.returncode != 0:
-        sys.exit(f"[prep] {label} failed with {r.returncode}")
+        # Only now is the untruncated command worth the space it takes.
+        print("[prep] failed command: " + full(cmd), flush=True)
+        sys.exit("[prep] {} failed with {}".format(label, r.returncode))
+    done()
 
 
 def run_capture(cmd, label):
@@ -79,8 +128,9 @@ def run_capture(cmd, label):
     and can run for half an hour, during which the log showed nothing after
     "solving the voxel" and looked hung.
     """
-    print(f"\n[prep] === {label} ===", flush=True)
-    proc = subprocess.Popen([str(c) for c in cmd], stdout=subprocess.PIPE,
+    step(label)
+    print("[prep] $ " + shown(cmd), flush=True)
+    proc = winrun.popen([str(c) for c in cmd], stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, bufsize=1)
     lines = []
     for line in proc.stdout:
@@ -88,6 +138,7 @@ def run_capture(cmd, label):
         sys.stdout.flush()
         lines.append(line)
     proc.wait()
+    done()
     if proc.returncode != 0:
         sys.exit(f"[prep] {label} failed with {proc.returncode}")
     return "".join(lines)
@@ -155,11 +206,13 @@ def main():
     name = man.get("name", folder.name)
     blender = find_blender(a.blender_exe)
 
+    print("[prep] === IGN LiDAR Tiler / render prep ===", flush=True)
     print(f"[prep] scene   : {name}", flush=True)
     print(f"[prep] blend   : {blend}", flush=True)
     print(f"[prep] tiles   : {tiles_dir}", flush=True)
     print(f"[prep] origin  : {origin}", flush=True)
     print(f"[prep] blender : {blender}", flush=True)
+    print(f"[prep] budget  : {target:,} points", flush=True)
 
     # ── 2. the carve footprint ───────────────────────────────────────────────
     # The proxy's outline IS the shape: islands stay islands, holes cut in the
@@ -187,6 +240,10 @@ def main():
     # budget over the whole footprint and cropped afterwards, so the budget was
     # spent on ground the camera never sees.
     voxel = a.voxel
+    # Set when the count says the ground simply does not hold `target` points.
+    # The shortfall guard below has to know the difference between a cloud that
+    # fell short and one that was never going to reach the number.
+    kept_every_return = False
     if voxel is None and not a.whole_footprint:
         out = run_capture(
             [sys.executable, HERE / "plan_density.py", "--tiles", tiles_dir,
@@ -200,6 +257,7 @@ def main():
             sys.exit("[prep] could not read a count from plan_density")
         if counted <= target:
             voxel = 0.0
+            kept_every_return = True
             print(f"[prep] {counted:,} points inside the carve, under the "
                   f"{target:,} budget: keeping every return", flush=True)
         else:
@@ -283,7 +341,12 @@ def main():
     # a voxel yourself says the density matters and the count is whatever the
     # ground holds — refusing that would be the guard second-guessing a
     # deliberate choice.
-    short = n_pts < 0.80 * target and not a.voxel
+    # `a.voxel is None`, not `not a.voxel`: --voxel 0 is a deliberate choice
+    # too, and 0.0 is falsy. And when step 3 already found the source under
+    # budget and kept every return, the shortfall is the answer, not a miss —
+    # no voxel exists that would produce more points.
+    short = (n_pts < 0.80 * target and a.voxel is None
+             and not kept_every_return)
     if (tag == "DUST" or short) and not a.allow_sparse:
         print(f"[prep] STOP before writing the render file.", flush=True)
         if short:

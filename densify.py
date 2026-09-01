@@ -15,6 +15,8 @@ so the new variant lands exactly where the old one sits and nothing in the
 import argparse
 import json
 import subprocess
+
+import winrun
 import sys
 from pathlib import Path
 
@@ -84,7 +86,7 @@ def main():
         raster = Path(a.raster)
         if not raster.is_file():
             sys.exit(f"--raster not found: {raster}")
-        probe = subprocess.run([PDAL_EXE, "info", "--summary", str(tiles[0])],
+        probe = winrun.run([PDAL_EXE, "info", "--summary", str(tiles[0])],
                                capture_output=True)
         if probe.returncode != 0:
             sys.exit(f"cannot read {tiles[0].name}: {probe.stderr.decode(errors='replace')}")
@@ -117,7 +119,7 @@ def main():
     meta_json = out_dir / f"{a.name}-{suffix_for(radius)}_metadata.json"
     cmd = [PDAL_EXE, "pipeline", str(pipe_json), "--metadata", str(meta_json)]
     print("\nrunning pdal ...", flush=True)
-    r = subprocess.run(cmd)
+    r = winrun.stream(cmd)
     if r.returncode != 0:
         sys.exit(f"pdal failed with {r.returncode}")
 

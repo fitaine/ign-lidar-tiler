@@ -29,6 +29,8 @@ Two things it will tell you rather than paper over:
 import argparse
 import json
 import subprocess
+
+import winrun
 import sys
 from datetime import date
 from pathlib import Path
@@ -94,7 +96,7 @@ def pick_raster(root, stem):
 
 
 def ply_bounds(path):
-    r = subprocess.run([PDAL_EXE, "info", "--summary", str(path)],
+    r = winrun.run([PDAL_EXE, "info", "--summary", str(path)],
                        capture_output=True, text=True)
     if r.returncode != 0:
         return None
@@ -117,7 +119,7 @@ def tile_stats(tiles):
     maxx = maxy = maxz = float("-inf")
     total = 0
     for t in tiles:
-        r = subprocess.run([PDAL_EXE, "info", "--summary", str(t)],
+        r = winrun.run([PDAL_EXE, "info", "--summary", str(t)],
                            capture_output=True, text=True)
         if r.returncode != 0:
             print(f"  ! pdal could not read {t.name}", flush=True)

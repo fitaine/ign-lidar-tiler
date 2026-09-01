@@ -17,6 +17,8 @@ import argparse
 import importlib.util
 import json
 import subprocess
+
+import winrun
 import sys
 from datetime import date
 from pathlib import Path
@@ -39,7 +41,7 @@ def load_pipeline_module():
 
 
 def tile_summary(path):
-    r = subprocess.run([PDAL_EXE, "info", "--summary", str(path)],
+    r = winrun.run([PDAL_EXE, "info", "--summary", str(path)],
                        capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit(f"pdal info failed on {path.name}: {r.stderr[:300]}")
@@ -129,7 +131,7 @@ def main():
     print(f"[acquire] checking {len(tiles)} tiles are readable ...", flush=True)
     bad = []
     for t in tiles:
-        r = subprocess.run([PDAL_EXE, "info", "--summary", str(t)],
+        r = winrun.run([PDAL_EXE, "info", "--summary", str(t)],
                            capture_output=True, text=True)
         if r.returncode != 0:
             bad.append(t.name)
@@ -173,7 +175,7 @@ def main():
     else:
         import solve_voxel
         print(f"[acquire] solving voxel for {a.target:,} points ...", flush=True)
-        r = subprocess.run([sys.executable, str(Path(__file__).parent / "solve_voxel.py"),
+        r = winrun.run([sys.executable, str(Path(__file__).parent / "solve_voxel.py"),
                             "--tiles", str(tiles_dir), "--target", str(a.target)],
                            capture_output=True, text=True)
         print(r.stdout, flush=True)
@@ -204,7 +206,7 @@ def main():
     # the whole scene, which is what makes billion-point scenes possible.
     ply = out / f"{a.name}-{suffix_for(radius)}.ply"
     print(f"[acquire] building {ply.name} tile by tile ...", flush=True)
-    r = subprocess.run([sys.executable, str(Path(__file__).parent / "densify_tiled.py"),
+    r = winrun.stream([sys.executable, str(Path(__file__).parent / "densify_tiled.py"),
                         "--tiles", str(tiles_dir), "--raster", str(raster),
                         "--voxel", str(voxel), "--origin", ",".join(str(v) for v in origin),
                         "--multiplier", str(a.multiplier),

@@ -22,6 +22,8 @@ the polygon and reports how many points survive, without writing anything.
 import argparse
 import json
 import subprocess
+
+import winrun
 import sys
 import tempfile
 from pathlib import Path
@@ -43,7 +45,7 @@ def count_in_polygon(tile, wkt, workdir):
         {"type": "filters.stats", "dimensions": "X"},
         {"type": "writers.null"},
     ]}), encoding="utf-8")
-    r = subprocess.run([PDAL_EXE, "pipeline", str(pipe), "--metadata", str(meta)],
+    r = winrun.run([PDAL_EXE, "pipeline", str(pipe), "--metadata", str(meta)],
                        capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit(f"pdal failed counting {tile.name}: {r.stderr[:400]}")

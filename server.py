@@ -15,6 +15,8 @@ decimal places.
 
 import json
 import subprocess
+
+import winrun
 import sys
 import threading
 import uuid
@@ -119,7 +121,7 @@ def tiles_as_geojson(feats):
 def run_job(job_id, args, script="acquire.py"):
     with JOBS_LOCK:
         JOBS[job_id]["state"] = "running"
-    proc = subprocess.Popen([sys.executable, "-u", str(HERE / script)] + args,
+    proc = winrun.popen([sys.executable, "-u", str(HERE / script)] + args,
                             cwd=str(HERE), stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, bufsize=1)
     with JOBS_LOCK:

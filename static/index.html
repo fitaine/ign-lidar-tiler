@@ -52,7 +52,11 @@
     font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;
     overflow-wrap:anywhere}
   .hint,#p-info,.warn{overflow-wrap:anywhere}
-  #log{overflow-x:auto}
+  /* textContent with newlines in it needs pre-wrap, or the whole job log
+     renders as one paragraph. It did, for months. */
+  #log{white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace;
+    font-size:11.5px;line-height:1.45;max-height:46vh;overflow-y:auto;
+    overflow-x:auto;overflow-wrap:anywhere;tab-size:2}
 </style>
 </head>
 <body>
