@@ -158,10 +158,11 @@
       <div class="hint">VRAM is the limit, not time. 150M peaks at 10.2 GB of a
         12 GB card and renders 900 tiles in about 58 h. 172M reaches 11.5 GB and
         goes memory-bound.</div>
-      <label for="p-cell">Carve mask cell (m)</label>
-      <input id="p-cell" type="number" value="3.0" min="0.5" step="0.5">
-      <div class="hint">Must be well coarser than the sparse cloud's point
-        spacing, or the mask pits itself and drops points it should keep.</div>
+      <label for="p-cell">Outline step (m)</label>
+      <input id="p-cell" type="number" value="4.0" min="0.5" step="0.5">
+      <div class="hint">How closely the footprint follows your carve. It only
+        traces the shape &mdash; nothing inside it is ever filtered, so this
+        cannot remove points the way the old mask did.</div>
       <div class="check">
         <input type="checkbox" id="p-crop">
         <label for="p-crop" style="margin:0">Ignore the carve, process every tile</label>
