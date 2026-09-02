@@ -74,6 +74,13 @@ def main():
                    help="Ball radius multiplier, 1.0 = spheres touch")
     p.add_argument("--skip-download", action="store_true",
                    help="Tiles are already present")
+    # A scene that predates the app already HAS its light cloud: it is sitting
+    # in the .blend, framed and carved years ago. Building a second one just to
+    # satisfy the manifest costs a PDAL pass and a gigabyte for nothing.
+    p.add_argument("--no-sparse", action="store_true",
+                   help="Do not build a sparse PLY. For adopting an old scene "
+                        "whose proxy is already in its .blend: the tiles, the "
+                        "ortho and the manifest are written, nothing else.")
     p.add_argument("--tiles-dir", default=None,
                    help="Existing tile archive to use instead of <out>/tiles")
     p.add_argument("--crop-to-shape", action="store_true",
@@ -234,20 +241,25 @@ def main():
     # Built tile by tile: peak memory then follows the largest tile rather than
     # the whole scene, which is what makes billion-point scenes possible.
     ply = out / f"{a.name}-{suffix_for(radius)}.ply"
-    print(f"[acquire] building {ply.name} tile by tile ...", flush=True)
-    r = winrun.stream([sys.executable, str(Path(__file__).parent / "densify_tiled.py"),
-                        "--tiles", str(tiles_dir), "--raster", str(raster),
-                        "--voxel", str(voxel), "--origin", ",".join(str(v) for v in origin),
-                        "--multiplier", str(a.multiplier),
-                        "--name", a.name, "--out", str(out)]
-                       + (["--polygon", a.geojson] if (a.crop_to_shape and a.geojson) else []))
-    if r.returncode != 0:
-        sys.exit(f"densify_tiled failed with {r.returncode}")
+    if a.no_sparse:
+        print(f"[acquire] --no-sparse: leaving the light cloud to the .blend "
+              f"that already holds one", flush=True)
+        n_out = 0
+    else:
+        print(f"[acquire] building {ply.name} tile by tile ...", flush=True)
+        r = winrun.stream([sys.executable, str(Path(__file__).parent / "densify_tiled.py"),
+                            "--tiles", str(tiles_dir), "--raster", str(raster),
+                            "--voxel", str(voxel), "--origin", ",".join(str(v) for v in origin),
+                            "--multiplier", str(a.multiplier),
+                            "--name", a.name, "--out", str(out)]
+                           + (["--polygon", a.geojson] if (a.crop_to_shape and a.geojson) else []))
+        if r.returncode != 0:
+            sys.exit(f"densify_tiled failed with {r.returncode}")
 
-    with open(ply, "rb") as f:
-        head = f.read(4096).decode("ascii", errors="replace")
-    n_out = next(int(l.split()[-1]) for l in head.splitlines()
-                 if l.startswith("element vertex"))
+        with open(ply, "rb") as f:
+            head = f.read(4096).decode("ascii", errors="replace")
+        n_out = next(int(l.split()[-1]) for l in head.splitlines()
+                     if l.startswith("element vertex"))
 
     # ── 6. manifest ──────────────────────────────────────────────────────────
     scene = {
@@ -266,16 +278,21 @@ def main():
         "raster_res": a.raster_res,
         "radius_multiplier": a.multiplier,
         "origin_forced": bool(a.origin),
-        "variants": [{
+        "variants": ([] if a.no_sparse else [{
             "role": "sparse", "file": ply.name, "voxel": voxel,
             "radius": radius, "points": n_out,
-        }],
+        }]),
         "renders": [],
     }
     (out / "scene.json").write_text(json.dumps(scene, indent=2), encoding="utf-8")
 
-    print(f"\n[acquire] {ply.name}: {n_out:,} points, {ply.stat().st_size/1e9:.2f} GB")
-    print(f"[acquire] radius {radius:.4f}")
+    if a.no_sparse:
+        print(f"\n[acquire] tiles, ortho and manifest are ready; the light cloud "
+              f"stays the one already in your .blend")
+    else:
+        print(f"\n[acquire] {ply.name}: {n_out:,} points, "
+              f"{ply.stat().st_size/1e9:.2f} GB")
+        print(f"[acquire] radius {radius:.4f}")
     print(f"[acquire] wrote {out/'scene.json'}")
 
 

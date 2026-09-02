@@ -368,15 +368,21 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"job": jid, "ahead": ahead})
 
         if u.path == "/api/acquire":
-            need = ("name", "out", "ring")
-            if any(k not in body for k in need):
-                return self._send(400, {"error": f"need {need}"})
-            ring = [list(to_lambert(lon, lat)) for lon, lat in body["ring"]]
-            gj = HERE / "_selection.geojson"
-            gj.write_text(json.dumps({"type": "Polygon", "coordinates": [ring]}),
-                          encoding="utf-8")
-            args = ["--name", body["name"], "--out", clean_path(body["out"]),
-                    "--geojson", str(gj),
+            if "name" not in body or "out" not in body:
+                return self._send(400, {"error": "need name and out"})
+            if "ring" not in body and "bbox_l93" not in body:
+                return self._send(400, {"error": "need a ring or a bbox_l93"})
+            # An adopted scene has no drawn ring: its footprint comes from the
+            # cloud that was just located, already in Lambert 93.
+            if body.get("bbox_l93"):
+                where = ["--bbox", str(body["bbox_l93"])]
+            else:
+                ring = [list(to_lambert(lon, lat)) for lon, lat in body["ring"]]
+                gj = HERE / "_selection.geojson"
+                gj.write_text(json.dumps({"type": "Polygon", "coordinates": [ring]}),
+                              encoding="utf-8")
+                where = ["--geojson", str(gj)]
+            args = ["--name", body["name"], "--out", clean_path(body["out"])] + where + [
                     "--target", str(int(body.get("target", 40_000_000))),
                     "--raster-res", str(body.get("raster_res", 0.20)),
                     "--multiplier", str(body.get("multiplier", 1.0))]
@@ -384,8 +390,35 @@ class Handler(BaseHTTPRequestHandler):
                 args += ["--voxel", str(body["voxel"])]
             if body.get("crop_to_shape"):
                 args += ["--crop-to-shape"]
+            # Adopting an old scene: its origin was recovered rather than
+            # derived, and its light cloud already exists inside the .blend.
+            if body.get("origin"):
+                args += ["--origin", str(body["origin"])]
+            if body.get("no_sparse"):
+                args += ["--no-sparse"]
             jid = uuid.uuid4().hex[:12]
             ahead = enqueue(jid, args)
+            return self._send(200, {"job": jid, "ahead": ahead})
+
+        if u.path == "/api/locate":
+            need = ("blend", "centre")
+            if any(k not in body for k in need):
+                return self._send(400, {"error": f"need {need}"})
+            # The map speaks lon/lat; the locator speaks Lambert 93. Convert
+            # here rather than reimplementing the projection in the browser.
+            centre = str(body["centre"])
+            if body.get("centre_is_lonlat", True):
+                lon, lat = (float(v) for v in centre.split(","))
+                cx, cy = to_lambert(lon, lat)
+                centre = f"{cx:.2f},{cy:.2f}"
+            args = ["--blend", clean_path(body["blend"]),
+                    "--centre", centre,
+                    "--radius", str(body.get("radius", 2500)),
+                    "--cell", str(body.get("cell", 2.0))]
+            if body.get("object"):
+                args += ["--object", body["object"]]
+            jid = uuid.uuid4().hex[:12]
+            ahead = enqueue(jid, args, "locate_blend.py")
             return self._send(200, {"job": jid, "ahead": ahead})
 
         return self._send(404, {"error": "not found"})

@@ -212,8 +212,19 @@ def main():
           f"margin {margin:+.4f})", flush=True)
     print(f"overlapping cells: {int(both.sum()):,} of {int(mask.sum()):,}", flush=True)
     print(f"\n  --origin {ox:.2f},{oy:.2f},{oz:.2f}", flush=True)
-    print(f"  scene bbox {ox + local_min[0]:.0f},{oy + local_min[1]:.0f} .. "
-          f"{ox + local_min[0] + cw*cell:.0f},{oy + local_min[1] + ch*cell:.0f}", flush=True)
+    bx0, by0 = ox + local_min[0], oy + local_min[1]
+    bx1, by1 = bx0 + cw * cell, by0 + ch * cell
+    print(f"  scene bbox {bx0:.0f},{by0:.0f} .. {bx1:.0f},{by1:.0f}", flush=True)
+    # Also in lon/lat, so a map can draw the answer without reimplementing
+    # Lambert 93 in the browser. Seeing the footprint land on the right valley
+    # is the check a number cannot give you.
+    try:
+        from lambert93 import to_wgs84
+        (lon0, lat0), (lon1, lat1) = to_wgs84(bx0, by0), to_wgs84(bx1, by1)
+        print(f"  scene bbox wgs84 {lon0:.6f},{lat0:.6f} .. {lon1:.6f},{lat1:.6f}",
+              flush=True)
+    except Exception:
+        pass
 
     print(f"peak stands {score / p99:.1f}x above the 99th percentile", flush=True)
 
