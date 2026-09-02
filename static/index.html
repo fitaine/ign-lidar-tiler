@@ -61,6 +61,16 @@
      "the log is cut off" when it is simply finished. The padding gives it
      somewhere to end, and scroll-padding keeps auto-scroll from parking the
      newest line under that edge. */
+  /* One line per job in the queue, so "nothing is happening" can be seen for
+     what it usually is: something else is ahead. */
+  #joblist{margin-bottom:8px;font-size:11.5px}
+  #joblist .j{display:flex;justify-content:space-between;gap:8px;padding:2px 0;
+    cursor:pointer;color:var(--muted)}
+  #joblist .j:hover{color:var(--ink)}
+  #joblist .j.here{color:var(--ink);font-weight:600}
+  #joblist .s{flex:0 0 auto;font-variant-numeric:tabular-nums}
+  #joblist .s.running{color:var(--accent)}
+  #joblist .s.failed{color:var(--warn)}
   #log{white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace;
     font-size:11.5px;line-height:1.45;max-height:46vh;overflow-y:auto;
     overflow-x:auto;overflow-wrap:anywhere;tab-size:2;
@@ -237,6 +247,7 @@
 
     <section id="jobsec" style="display:none">
       <h2>Job <span id="jstate" style="color:var(--accent)"></span></h2>
+      <div id="joblist"></div>
       <div id="log"></div>
     </section>
   </div>
@@ -725,11 +736,33 @@ document.getElementById('p-go').onclick = async () => {
 };
 
 // ── jobs ────────────────────────────────────────────────────────────────────
+async function refreshJobs(current){
+  const el = document.getElementById('joblist');
+  if (!el) return;
+  let jobs = [];
+  try { jobs = (await (await fetch('/api/jobs')).json()).jobs || []; } catch (e) { return; }
+  const live = jobs.filter(j => j.state === 'running' || j.state === 'queued');
+  // Only worth showing when there is a line, or something else is running
+  if (live.length < 2 && !(live.length === 1 && live[0].id !== current)){
+    el.innerHTML = ''; return;
+  }
+  el.innerHTML = jobs.slice(-8).map(j => {
+    const state = j.state === 'queued' && j.ahead
+      ? `queued, ${j.ahead} ahead` : j.state;
+    return `<div class="j${j.id === current ? ' here' : ''}" data-job="${j.id}">`
+         + `<span>${j.what || j.script}</span>`
+         + `<span class="s ${j.state}">${state}</span></div>`;
+  }).join('');
+  el.querySelectorAll('.j').forEach(row =>
+    row.onclick = () => poll(row.dataset.job));
+}
+
 async function poll(jid, onDone){
   const st = document.getElementById('jstate'), log = document.getElementById('log');
   const tick = async () => {
     const r = await fetch('/api/job/' + jid);
     const j = await r.json();
+    refreshJobs(jid);
     // "queued" alone does not say how long: show the position in the line
     st.textContent = (j.state === 'queued' && j.ahead)
       ? `queued, ${j.ahead} job${j.ahead > 1 ? 's' : ''} ahead`

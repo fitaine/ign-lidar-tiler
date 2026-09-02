@@ -156,6 +156,30 @@ def job_worker():
 threading.Thread(target=job_worker, daemon=True).start()
 
 
+def job_label(job):
+    """A few words saying what a job is for, from the arguments it was given."""
+    args = job.get("args", [])
+    def val(flag):
+        return args[args.index(flag) + 1] if flag in args else None
+    name = val("--name") or val("--scene") or val("--blend") or ""
+    if name:
+        q = Path(name)
+        # A manifest is always called scene.json, so its own stem says nothing.
+        # The scene is the folder it sits in, or the one above when it lives in
+        # a LIDAR subfolder.
+        if q.stem == "scene":
+            q = q.parent
+            if q.name.lower() in ("lidar", "output"):
+                q = q.parent
+        name = q.stem or q.name
+    script = job.get("script", "acquire.py")
+    kind = {"acquire.py": "acquire", "prepare_render.py": "render prep",
+            "locate_blend.py": "locate"}.get(script, script)
+    if "--dry-run" in args:
+        kind = "preview"
+    return f"{kind} {name}".strip()
+
+
 def append_log(job, line):
     """Add a line, or update the one already there for the same download.
 
@@ -247,6 +271,20 @@ class Handler(BaseHTTPRequestHandler):
                 d["files"] = [f for f in d["files"]
                               if any(f["name"].lower().endswith(e) for e in exts)]
             return self._send(200, d)
+
+        if u.path == "/api/jobs":
+            # The whole line, not just the job whoever is looking started.
+            # Jobs run one at a time now, so "why is nothing happening" is
+            # usually "something else is ahead of you", and that was invisible.
+            with JOBS_LOCK:
+                order = [j["id"] for j in JOBS.values() if j["state"] == "queued"]
+                out = [{"id": j["id"], "state": j["state"],
+                        "script": j.get("script", "acquire.py"),
+                        "what": job_label(j),
+                        "ahead": order.index(j["id"]) if j["state"] == "queued" else None,
+                        "lines": len(j["log"])}
+                       for j in JOBS.values()]
+            return self._send(200, {"jobs": out[-20:]})
 
         if u.path.startswith("/api/job/"):
             jid = u.path.rsplit("/", 1)[-1]
