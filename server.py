@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import fetch_tiles
 import net
+from prepare_render import find_blender
 from lambert93 import to_lambert, to_wgs84
 
 HERE = Path(__file__).resolve().parent
@@ -439,6 +440,27 @@ class Handler(BaseHTTPRequestHandler):
             jid = uuid.uuid4().hex[:12]
             ahead = enqueue(jid, args)
             return self._send(200, {"job": jid, "ahead": ahead})
+
+        if u.path == "/api/clouds":
+            # Answered directly rather than queued: someone is staring at a
+            # menu waiting for it, and putting it behind a 40 minute densify
+            # would make the menu useless. It only opens the file and exits.
+            blend = clean_path(body.get("blend", ""))
+            if not Path(blend).is_file():
+                return self._send(400, {"error": f"not a file: {blend}"})
+            try:
+                r = subprocess.run(
+                    [find_blender(), "-b", blend, "--python",
+                     str(HERE / "list_clouds.py")],
+                    capture_output=True, text=True, timeout=180)
+            except subprocess.TimeoutExpired:
+                return self._send(504, {"error": "Blender took too long to open "
+                                                 "that file"})
+            for line in r.stdout.splitlines():
+                if line.startswith("CLOUDS="):
+                    return self._send(200, {"clouds": json.loads(line[7:])})
+            return self._send(500, {"error": "could not read the file: "
+                                             + (r.stderr or r.stdout)[-300:]})
 
         if u.path == "/api/locate":
             need = ("blend", "centre")

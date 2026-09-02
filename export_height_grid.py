@@ -22,7 +22,8 @@ def parse_args():
     argv = sys.argv
     argv = argv[argv.index("--") + 1:] if "--" in argv else []
     p = argparse.ArgumentParser()
-    p.add_argument("--object", default=None, help="Cloud object; omit to use the tag")
+    p.add_argument("--object", default=None,
+                   help="Cloud object; omit to use the only large one")
     p.add_argument("--cell", type=float, default=5.0, help="Cell size in metres")
     p.add_argument("--out", required=True)
     return p.parse_args(argv)
@@ -37,10 +38,28 @@ def main():
                      if o.type in ("MESH", "POINTCLOUD")]
             sys.exit(f"Object {a.object!r} not found. Candidates: {names}")
     else:
+        # A scene that predates the app has no tag - that is the whole reason
+        # it is being located - so falling back to the tag alone made "leave it
+        # empty" impossible for exactly the files this is for. Fall back to the
+        # only large cloud, the way extract_outline.py does, and only ask when
+        # the file genuinely holds more than one.
         tagged = [o for o in bpy.data.objects if o.get("ign_lidar_scene")]
-        if len(tagged) != 1:
-            sys.exit("pass --object; no single tagged cloud in this file")
-        ob = tagged[0]
+        if len(tagged) == 1:
+            ob = tagged[0]
+        else:
+            clouds = [o for o in bpy.data.objects
+                      if o.type in ("MESH", "POINTCLOUD")
+                      and len(o.data.vertices if o.type == "MESH"
+                              else o.data.points) > 100_000]
+            if len(clouds) == 1:
+                ob = clouds[0]
+                print(f"[grid] using the only large cloud, {ob.name!r}", flush=True)
+            elif not clouds:
+                sys.exit("no cloud in this file has more than 100k points; "
+                         "name one with --object")
+            else:
+                sys.exit(f"several clouds here, name one with --object: "
+                         f"{[o.name for o in clouds]}")
 
     if ob.type == "MESH":
         n = len(ob.data.vertices)

@@ -159,8 +159,9 @@
       <h2>The .blend to adopt</h2>
       <div class="row"><input id="a-blend" placeholder="the .blend holding the cloud">
         <button style="flex:0 0 auto" data-browse="a-blend" data-ext=".blend">Browse</button></div>
-      <label for="a-object">Cloud object (optional)</label>
-      <input id="a-object" placeholder="leave empty to use the only large one">
+      <label for="a-object">Which cloud in that file</label>
+      <select id="a-object"><option value="">pick a .blend first</option></select>
+      <div class="hint" id="a-clouds"></div>
       <div class="hint">For a scene made before this app: its cloud is already
         framed and carved in the .blend, but nothing records where on Earth it
         sits, so it cannot be densified until it is located.</div>
@@ -605,6 +606,52 @@ function adoptReady(){
 ['a-blend', 'a-name', 'a-out'].forEach(id =>
   document.getElementById(id).addEventListener('input', adoptReady));
 
+// Reading the clouds out of a .blend means opening it in Blender, which takes
+// a few seconds, so it happens when the path stops changing rather than on
+// every keystroke.
+let cloudsTimer = null;
+document.getElementById('a-blend').addEventListener('input', () => {
+  clearTimeout(cloudsTimer);
+  cloudsTimer = setTimeout(loadClouds, 600);
+});
+
+async function loadClouds(){
+  const blend = document.getElementById('a-blend').value.trim();
+  const sel = document.getElementById('a-object');
+  const note = document.getElementById('a-clouds');
+  if (!blend.toLowerCase().endsWith('.blend')){
+    sel.innerHTML = '<option value="">pick a .blend first</option>';
+    note.textContent = ''; return;
+  }
+  note.textContent = 'opening the file to see what is in it ...';
+  sel.innerHTML = '<option value="">reading ...</option>';
+  let d;
+  try {
+    d = await (await fetch('/api/clouds', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({blend})})).json();
+  } catch (e) { d = {error: String(e)}; }
+  if (d.error){
+    sel.innerHTML = '<option value="">could not read it</option>';
+    note.innerHTML = `<span class="warn">${d.error}</span>`; return;
+  }
+  const clouds = d.clouds || [];
+  if (!clouds.length){
+    sel.innerHTML = '<option value="">no point cloud in that file</option>';
+    note.innerHTML = '<span class="warn">Nothing here has more than 100k '
+      + 'points. Is this the right .blend?</span>';
+    return;
+  }
+  sel.innerHTML = clouds.map(c =>
+    `<option value="${c.name}">${c.name} — ${(c.points/1e6).toFixed(1)}M pts`
+    + (c.size ? `, ${c.size[0].toFixed(0)} x ${c.size[1].toFixed(0)} m` : '')
+    + `</option>`).join('');
+  note.textContent = clouds.length === 1
+    ? 'one cloud in this file, already selected'
+    : `${clouds.length} clouds in this file; the biggest is selected`;
+  adoptReady();
+}
+
 function markFor(lngLat){
   adopt.mark = lngLat;
   document.getElementById('a-mark').textContent =
@@ -796,7 +843,9 @@ async function poll(jid, onDone){
 const PICK = {
   "p-scene": {kind: "file", ext: ".json",  title: "Choose scene.json"},
   "p-blend": {kind: "file", ext: ".blend", title: "Choose the lit .blend"},
-  "out":     {kind: "dir",                 title: "Choose the output folder"}
+  "a-blend": {kind: "file", ext: ".blend", title: "Choose the .blend to adopt"},
+  "out":     {kind: "dir",                 title: "Choose the output folder"},
+  "a-out":   {kind: "dir",                 title: "Choose the scene folder"}
 };
 
 document.querySelectorAll('[data-browse]').forEach(b => {
@@ -816,7 +865,12 @@ document.querySelectorAll('[data-browse]').forEach(b => {
       });
       const d = await r.json();
       if (d.error) alert(d.error);
-      else if (d.path) field.value = d.path;      // empty means cancelled
+      else if (d.path){
+        field.value = d.path;                     // empty means cancelled
+        // A path arriving from the dialog is not typing, so nothing else
+        // notices it: tell the panel it changed.
+        field.dispatchEvent(new Event('input'));
+      }
     } catch (e) {
       alert("Could not open the dialog: " + e.message);
     } finally {
