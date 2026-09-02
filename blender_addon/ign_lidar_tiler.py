@@ -86,6 +86,26 @@ def load_manifest(ob):
         return None
 
 
+def find_manifest():
+    """The scene.json belonging to the open .blend, if it is somewhere obvious.
+
+    Scenes keep their manifest beside the clouds rather than beside the .blend,
+    so look in the places it actually lives before asking.
+    """
+    if not bpy.data.filepath:
+        return None
+    folder = Path(bpy.data.filepath).parent
+    for candidate in (folder / "scene.json",
+                      folder / "LIDAR" / "scene.json",
+                      folder / "LIDAR" / "output" / "scene.json",
+                      folder.parent / "LIDAR" / "scene.json"):
+        if candidate.is_file():
+            return candidate
+    for sub in sorted(folder.glob("*/scene.json")):
+        return sub
+    return None
+
+
 def tagged_objects(context=None):
     """Every object in the file carrying a scene tag."""
     return [o for o in bpy.data.objects if o.get(TAG_SCENE)]
@@ -101,17 +121,33 @@ class IGNLT_OT_tag(Operator):
     filter_glob: StringProperty(default="*.json", options={"HIDDEN"})
 
     def invoke(self, context, event):
+        # The browser pre-fills the field with the CURRENT .blend and filter_glob
+        # only filters the list, not what is typed. Clicking straight through
+        # therefore handed the operator a .blend, which failed as a utf-8 decode
+        # error deep in json - a message about nothing the reader did. Start on
+        # the scene's own manifest when it can be found, and on the name when it
+        # cannot.
+        found = find_manifest()
+        self.filepath = str(found) if found else "scene.json"
         context.window_manager.fileselect_add(self)
         return {"RUNNING_MODAL"}
 
     def execute(self, context):
         ob = context.object
         p = Path(self.filepath)
+        if p.suffix.lower() != ".json":
+            self.report({"ERROR"}, f"{p.name} is not a manifest: pick the "
+                                   f"scene.json from the scene's LIDAR folder")
+            return {"CANCELLED"}
         if not p.is_file():
             self.report({"ERROR"}, f"not a file: {p}")
             return {"CANCELLED"}
         try:
             man = json.loads(p.read_text(encoding="utf-8"))
+        except UnicodeDecodeError:
+            self.report({"ERROR"}, f"{p.name} is not text, so it is not a "
+                                   f"scene.json. Pick the manifest instead.")
+            return {"CANCELLED"}
         except Exception as e:
             self.report({"ERROR"}, f"could not read {p.name}: {e}")
             return {"CANCELLED"}
