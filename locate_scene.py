@@ -153,6 +153,10 @@ def main():
                    help="DTM cell size; defaults to the cloud grid's")
     p.add_argument("--dtm", default=None, help="Reuse a DTM GeoTIFF instead of fetching")
     p.add_argument("--keep-dtm", default=None, help="Where to save the fetched DTM")
+    p.add_argument("--no-verify", dest="verify", action="store_false",
+                   help="Skip the cross-check at two other filter widths. The "
+                        "check is what tells a real match from a lucky peak, so "
+                        "only skip it when you already trust the answer.")
     p.add_argument("--hp-window", type=int, default=41,
                    help="High-pass window in cells; removes the regional slope "
                         "so the match is driven by terrain detail (default 41)")
@@ -211,9 +215,42 @@ def main():
     print(f"  scene bbox {ox + local_min[0]:.0f},{oy + local_min[1]:.0f} .. "
           f"{ox + local_min[0] + cw*cell:.0f},{oy + local_min[1] + ch*cell:.0f}", flush=True)
 
-    if score < 0.5 or margin < 0.05:
-        print("\nWEAK MATCH. Do not trust this origin: widen --radius, check the "
-              "search centre, or use a finer --cell.", flush=True)
+    print(f"peak stands {score / p99:.1f}x above the 99th percentile", flush=True)
+
+    # The absolute score cannot be the test on its own: it depends on how rough
+    # the terrain is and how densely the cloud samples it. Millau, at 2 points
+    # per square metre over a plateau, peaks at 0.32 and is right. What actually
+    # separates a real match from a lucky one is whether it MOVES: the same
+    # terrain matched through a different high-pass window lands in the same
+    # place, a coincidence does not. So the tool now does the check that was
+    # being done by hand.
+    if a.verify:
+        agree, spread_m = [], 0.0
+        for hp in (max(11, a.hp_window // 2), a.hp_window * 2 + 1):
+            s2, dx2, dy2, _ = locate(cloud, mask, dtm, hp_window=hp)
+            ox2 = minx + dx2 * cell - local_min[0]
+            oy2 = miny + dy2 * cell - local_min[1]
+            moved = ((ox2 - ox) ** 2 + (oy2 - oy) ** 2) ** 0.5
+            spread_m = max(spread_m, moved)
+            agree.append(moved <= 1.5 * cell)
+            print(f"  cross-check at --hp-window {hp}: "
+                  f"{ox2:.2f},{oy2:.2f}  ({moved:.1f} m away, score {s2:.4f})",
+                  flush=True)
+        confirmed = all(agree)
+    else:
+        confirmed, spread_m = None, 0.0
+
+    if confirmed:
+        print(f"\nCONFIRMED. Two other filters put the origin within "
+              f"{spread_m:.1f} m of this one, which a false peak does not do. "
+              f"Verify by rendering before relying on it.", flush=True)
+    elif confirmed is False:
+        print(f"\nUNSTABLE: the origin moves by up to {spread_m:.0f} m when the "
+              f"filter changes, so this peak is not the terrain. Widen --radius, "
+              f"check the search centre, or use a finer --cell.", flush=True)
+    elif score < 0.5 or margin < 0.05:
+        print("\nUNVERIFIED and the peak is not commanding. Re-run without "
+              "--no-verify before trusting this.", flush=True)
     else:
         print("\nStrong, isolated peak. Verify by rendering before relying on it.",
               flush=True)
