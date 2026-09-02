@@ -137,7 +137,12 @@
       </div>
       <div class="hint">Off, whole 1 km tiles with a staircase edge. On costs
         nothing extra, the crop already runs.</div>
-      <button class="go" id="go" disabled>Acquire scene</button>
+      <div class="row" style="margin-top:12px">
+        <button id="preview" disabled>Preview</button>
+        <button class="go" id="go" style="margin-top:0" disabled>Acquire scene</button>
+      </div>
+      <div class="hint">Preview asks IGN which tiles the shape needs and how
+        much they weigh, and downloads nothing.</div>
     </section>
 
     <section class="adopt" style="display:none">
@@ -524,10 +529,13 @@ async function select(){
   document.getElementById('tiles').innerHTML =
     d.tiles.map(t => `${t.name} &nbsp; ${(t.bytes/1e6).toFixed(0)} MB`).join('<br>');
   document.getElementById('go').disabled = d.count === 0;
+  document.getElementById('preview').disabled = d.count === 0;
 }
 
 // ── acquire ─────────────────────────────────────────────────────────────────
-document.getElementById('go').onclick = async () => {
+// Preview and acquire send the SAME body apart from one flag, so what the
+// preview reports is what the run would do.
+async function startAcquire(dryRun){
   const name = document.getElementById('name').value.trim();
   const out  = document.getElementById('out').value.trim();
   if (!name || !out){ alert('Name and output folder are required.'); return; }
@@ -536,15 +544,20 @@ document.getElementById('go').onclick = async () => {
     target: Math.round(parseFloat(document.getElementById('target').value) * 1e6),
     raster_res: parseFloat(document.getElementById('rres').value),
     multiplier: parseFloat(document.getElementById('mult').value),
-    crop_to_shape: document.getElementById('crop').checked
+    crop_to_shape: document.getElementById('crop').checked,
+    dry_run: !!dryRun
   };
   const r = await fetch('/api/acquire', {method:'POST',
     headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   const d = await r.json();
   if (d.error){ alert(d.error); return; }
-  document.getElementById('go').disabled = true;
+  if (!dryRun) document.getElementById('go').disabled = true;
   document.getElementById('jobsec').style.display = 'block';
   poll(d.job);
+}
+document.getElementById('preview').onclick = () => startAcquire(true);
+document.getElementById('go').onclick = async () => {
+  startAcquire(false);
 };
 
 // ── panels ──────────────────────────────────────────────────────────────────

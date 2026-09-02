@@ -396,6 +396,8 @@ class Handler(BaseHTTPRequestHandler):
                 args += ["--origin", str(body["origin"])]
             if body.get("no_sparse"):
                 args += ["--no-sparse"]
+            if body.get("dry_run"):
+                args += ["--dry-run"]
             jid = uuid.uuid4().hex[:12]
             ahead = enqueue(jid, args)
             return self._send(200, {"job": jid, "ahead": ahead})

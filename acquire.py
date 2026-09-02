@@ -114,6 +114,33 @@ def main():
     feats.sort(key=lambda f: f["properties"]["name"])
     print(f"[acquire] {len(feats)} tiles selected", flush=True)
 
+    # A preview has to answer BEFORE the download, not after it. This used to
+    # sit past the download and the readability check, so --dry-run fetched
+    # every gigabyte and only then reported what it would have fetched.
+    if a.dry_run:
+        urls = [f["properties"]["url"] for f in feats]
+        sizes = fetch_tiles.head_sizes(urls)
+        here = sum(1 for url, sz in zip(urls, sizes)
+                   if sz and (tiles_dir / Path(url.split("?")[0]).name).is_file()
+                   and (tiles_dir / Path(url.split("?")[0]).name).stat().st_size == sz)
+        xs, ys = [], []
+        for f in feats:
+            ring = fetch_tiles.ring_of(f)
+            xs += [q[0] for q in ring]
+            ys += [q[1] for q in ring]
+        total = sum(sz for sz in sizes if sz)
+        print(f"[acquire] tile footprint {min(xs):.0f},{min(ys):.0f} .. "
+              f"{max(xs):.0f},{max(ys):.0f}  "
+              f"({(max(xs)-min(xs))/1000:.1f} x {(max(ys)-min(ys))/1000:.1f} km)",
+              flush=True)
+        print(f"[acquire] {total/1e9:.1f} GB to download"
+              + (f", {here} tile(s) already here" if here else ""), flush=True)
+        for f, sz in zip(feats, sizes):
+            print(f"[acquire]   {f['properties']['name']}  "
+                  f"{(sz or 0)/1e6:.0f} MB", flush=True)
+        print(f"[acquire] dry run: nothing downloaded", flush=True)
+        return
+
     if not a.skip_download:
         urls = [f["properties"]["url"] for f in feats]
         sizes = fetch_tiles.head_sizes(urls)
@@ -200,10 +227,6 @@ def main():
           f"relief {maxz-minz:.0f} m, {raw_total:,} raw points", flush=True)
     print(f"[acquire] origin {origin}", flush=True)
 
-    if a.dry_run:
-        print(f"[acquire] dry run: would build a sparse PLY into {out}", flush=True)
-        return
-
     # ── 3. voxel ─────────────────────────────────────────────────────────────
     if a.voxel:
         voxel = a.voxel
@@ -231,11 +254,32 @@ def main():
     lp = load_pipeline_module()
     layer = lp.KNOWN_LAYERS.get(a.layer, a.layer)
     raster = out / f"{a.name}-{round(a.raster_res*100):03d}_raster.tif"
+
+    # The ortho only has to cover the ground that will end up coloured. Whole
+    # tiles are kept unless the build is clipped, so the tile extent is right
+    # for a normal acquire - but an adopted scene, or one clipped to a drawn
+    # shape, colours far less than that. Millau asked for 12 km2 of ortho to
+    # colour 2.18: 849 MB where 150 would have done, and that repeats for every
+    # scene adopted. Pad by a tile of slack so the crop never samples the edge.
+    rminx, rminy, rmaxx, rmaxy = minx, miny, maxx, maxy
+    clipped = a.no_sparse or (a.crop_to_shape and poly is not None)
+    if clipped:
+        pad = 50.0
+        rminx = max(minx, bbox[0] - pad); rminy = max(miny, bbox[1] - pad)
+        rmaxx = min(maxx, bbox[2] + pad); rmaxy = min(maxy, bbox[3] + pad)
+        saved = 1 - ((rmaxx - rminx) * (rmaxy - rminy)) / ((maxx - minx) * (maxy - miny))
+        if saved > 0.05:
+            print(f"[acquire] ortho over the {(rmaxx-rminx)/1000:.1f} x "
+                  f"{(rmaxy-rminy)/1000:.1f} km being kept, not the "
+                  f"{(maxx-minx)/1000:.1f} x {(maxy-miny)/1000:.1f} km of tiles "
+                  f"({100*saved:.0f}% less to fetch)", flush=True)
+
     if raster.is_file():
         print(f"[acquire] reusing {raster.name}", flush=True)
     else:
         print(f"[acquire] fetching ortho at {a.raster_res} m/px ...", flush=True)
-        lp.fetch_raster_tiled(minx, miny, maxx, maxy, a.raster_res, layer, str(raster))
+        lp.fetch_raster_tiled(rminx, rminy, rmaxx, rmaxy, a.raster_res, layer,
+                              str(raster))
 
     # ── 5. sparse PLY ────────────────────────────────────────────────────────
     # Built tile by tile: peak memory then follows the largest tile rather than
