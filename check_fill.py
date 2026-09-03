@@ -253,8 +253,14 @@ def report(r):
     print(f"  voxel / radius    {r['voxel']:.3f} m / {r['radius']:.4f}")
     print(f"  nearest neighbour median {r['nn_median']:.3f} m, p90 {r['nn_p90']:.3f} m"
           f"   (pitch {r['pitch_ratio']:.2f}x the voxel)")
-    print(f"  touching neighbours {r['touching_mean']:.2f} of {SURFACE_SLOTS} "
-          f"-> surface {100*r['fill']:.0f}% closed")
+    # Over 4 means the points are not on a lattice at all - every return was
+    # kept - so the fraction stops meaning anything and only the count does.
+    if r["touching_mean"] > SURFACE_SLOTS:
+        print(f"  neighbours in reach  {r['touching_mean']:.2f}  "
+              f"(no lattice: more than a closed surface needs)")
+    else:
+        print(f"  touching neighbours {r['touching_mean']:.2f} of {SURFACE_SLOTS} "
+              f"-> surface {100*r['fill']:.0f}% closed")
     lo, hi = r.get("isolated_spread", (r["isolated"], r["isolated"]))
     print(f"  points with none    {100*r['isolated']:.1f}%  "
           f"(median of {r.get('windows', 1)} patches, {100*lo:.1f}-{100*hi:.1f}%)")

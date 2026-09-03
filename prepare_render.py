@@ -332,10 +332,19 @@ def main():
     # own spacing: a ball spans 2R, which is the lattice step it stands in for.
     fill = check_fill.measure(final, voxel if voxel > 0 else radius * 2.0)
     tag, note = check_fill.verdict(fill)
-    print(f"[prep] fill check: {fill['touching_mean']:.2f} of "
-          f"{check_fill.SURFACE_SLOTS} neighbours "
-          f"touching, lattice {100*fill['fill']:.0f}% filled, "
-          f"{100*fill['isolated']:.1f}% of points isolated -> {tag}", flush=True)
+    # "5.34 of 4 neighbours" is not a sentence. A downsampled cloud sits on a
+    # lattice where 4 touching neighbours is a closed surface and the fraction
+    # means something; a cloud with every return kept has no lattice at all, so
+    # it is only worth saying how many neighbours are within reach.
+    if voxel > 0:
+        print(f"[prep] fill check: {fill['touching_mean']:.2f} of "
+              f"{check_fill.SURFACE_SLOTS} lattice neighbours touching, "
+              f"surface {100*fill['fill']:.0f}% closed, "
+              f"{100*fill['isolated']:.1f}% of points isolated -> {tag}", flush=True)
+    else:
+        print(f"[prep] fill check: {fill['touching_mean']:.2f} neighbours within "
+              f"a ball's reach ({fill['radius']*2:.2f} m), "
+              f"{100*fill['isolated']:.1f}% of points isolated -> {tag}", flush=True)
 
     # The target is only a promise when the solver was asked to hit it. Naming
     # a voxel yourself says the density matters and the count is whatever the
