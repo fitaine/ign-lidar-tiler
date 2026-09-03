@@ -144,6 +144,11 @@ def main():
     p.add_argument("--out", default=None, help="Where to write scene.json")
     p.add_argument("--multiplier", type=float, default=1.0,
                    help="Ball radius multiplier to record (1.0 = spheres touch)")
+    p.add_argument("--origin", default=None,
+                   help="X,Y,Z in Lambert 93, when the origin was recovered some "
+                        "other way: from locate_scene.py, or by subtracting a "
+                        "recentred cloud's bounds from the absolute PLY it came "
+                        "from. Overrides whatever the pipeline files say.")
     p.add_argument("--dry-run", action="store_true", help="Report, write nothing")
     a = p.parse_args()
 
@@ -208,6 +213,21 @@ def main():
         problems.append(f"variants disagree on the origin: {uniq}. They will not "
                         f"align with each other; pick one scene per manifest.")
     origin = list(uniq[0]) if uniq else None
+
+    # An origin worked out elsewhere wins. A PLY written in absolute Lambert 93
+    # records none, so the pipeline files cannot supply one - but subtracting
+    # the recentred cloud's bounds from that PLY's gives it exactly, and a
+    # matched terrain gives it to the metre. Either beats refusing to adopt.
+    if a.origin:
+        given = [float(v) for v in a.origin.split(",")]
+        if len(given) != 3:
+            sys.exit("--origin needs three comma-separated values")
+        if origin and any(abs(g - o) > 1.0 for g, o in zip(given, origin)):
+            problems.append(f"the given origin {given} disagrees with the one in "
+                            f"the pipeline files {origin}; using the given one")
+        origin = given
+        print("")
+        print(f"using the origin given on the command line: {origin}")
 
     # A PLY with no export json still has usable evidence: if adding the
     # scene origin lands its bounds inside the tile footprint, it shares that
