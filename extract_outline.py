@@ -76,11 +76,19 @@ def pick_object(name):
     sys.exit(f"several tagged objects, pass --object: {[o.name for o in tagged]}")
 
 
-def world_xy(ob):
-    """Proxy points in the PLY's own coordinates, translation included.
+def local_xy(ob):
+    """Proxy points in the PLY's own coordinates - WITHOUT the object transform.
 
-    Her edits are vertex deletion plus at most one object translation, so the
-    object matrix has to be applied or the footprint lands beside the scene.
+    The origin maps the PLY's coordinates to Lambert 93, so a footprint has to
+    be built in those same coordinates. Applying matrix_world instead shifts it
+    by however far the object was moved in the scene, and the crop then keeps
+    the wrong ground: Montvernier's cloud is moved by (107, 236) m, and its
+    footprint was cut 107 m east and 236 m north of the terrain it describes -
+    236 m of the framing missing at one end, 240 m of empty ground at the other.
+
+    Moving the object does not move the ground it stands for. The dense cloud
+    is given the same transform when it is swapped in (make_render_blend.py),
+    so ignoring it here is what keeps the two aligned.
     """
     data = ob.data
     if ob.type == "POINTCLOUD":
@@ -92,15 +100,19 @@ def world_xy(ob):
         co = np.empty(n * 3, dtype=np.float32)
         data.vertices.foreach_get("co", co)
     co = co.reshape(n, 3).astype(np.float64)
-    m = np.array(ob.matrix_world, dtype=np.float64)
-    co = co @ m[:3, :3].T + m[:3, 3]
+
+    t = tuple(round(v, 3) for v in ob.matrix_world.translation)
+    if any(abs(v) > 1e-6 for v in t):
+        print(f"[outline] note: {ob.name!r} is moved by {t} in the scene. The "
+              f"footprint follows the ground, not the placement; the dense "
+              f"cloud inherits the same transform.", flush=True)
     return co[:, :2], n
 
 
 def main():
     a = parse_args()
     ob = pick_object(a.object)
-    xy, n = world_xy(ob)
+    xy, n = local_xy(ob)
     print(f"[outline] {ob.name!r}: {n:,} points", flush=True)
 
     grid, grid_origin = ol.occupancy(xy, a.cell)
