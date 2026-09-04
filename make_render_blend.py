@@ -135,15 +135,35 @@ def main():
             sys.exit(f"Object {a.object!r} not found. Candidates: {names}")
     else:
         tagged = [o for o in bpy.data.objects if o.get("ign_lidar_scene")]
-        if not tagged:
-            sys.exit("no object carries an ign_lidar_scene tag; pass --object, or "
-                     "tag the cloud with the IGN LiDAR Tiler add-on")
         if len(tagged) > 1:
             sys.exit(f"several tagged objects, pass --object to choose: "
                      f"{[o.name for o in tagged]}")
-        old = tagged[0]
-        print(f"[swap] using tagged object {old.name!r} "
-              f"(scene {old.get('ign_lidar_name')!r})", flush=True)
+        if tagged:
+            old = tagged[0]
+            print(f"[swap] using tagged object {old.name!r} "
+                  f"(scene {old.get('ign_lidar_name')!r})", flush=True)
+        else:
+            # An adopted scene has no tag - it was adopted precisely because
+            # nothing linked it to a manifest - and requiring one here made the
+            # last step of the run fail after the dense cloud had been built.
+            # extract_outline.py and export_height_grid.py already fall back to
+            # the only large cloud; this is the same rule, and it still refuses
+            # when there is a choice to be made, because this one REPLACES the
+            # object it picks.
+            clouds = [o for o in bpy.data.objects
+                      if o.type in ("MESH", "POINTCLOUD")
+                      and len(o.data.vertices if o.type == "MESH"
+                              else o.data.points) > 100_000]
+            if len(clouds) == 1:
+                old = clouds[0]
+                print(f"[swap] no tag here; using the only large cloud, "
+                      f"{old.name!r}", flush=True)
+            elif not clouds:
+                sys.exit("no cloud in this file has more than 100k points; "
+                         "name one with --object")
+            else:
+                sys.exit(f"several clouds and none tagged, pass --object to "
+                         f"choose: {[o.name for o in clouds]}")
 
     old_matrix = old.matrix_world.copy()
     old_materials = [m for m in old.data.materials]
