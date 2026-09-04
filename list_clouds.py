@@ -45,8 +45,12 @@ def main():
             (data.vertices if ob.type == "MESH" else data.points).foreach_get(
                 "co" if ob.type == "MESH" else "position", co)
             co = co.reshape(n, 3)
-            size = (co.max(0) - co.min(0)).tolist()
-            entry["size"] = [round(v, 1) for v in size]
+            lo, hi = co.min(0), co.max(0)
+            entry["size"] = [round(v, 1) for v in (hi - lo).tolist()]
+            # The minimum corner is what recovers an origin: a PLY written in
+            # absolute Lambert 93 records none, but subtracting this from its
+            # bounds gives the offset exactly.
+            entry["min"] = [round(v, 4) for v in lo.tolist()]
         except Exception:
             pass
         out.append(entry)

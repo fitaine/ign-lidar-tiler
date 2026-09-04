@@ -162,12 +162,13 @@
       <label for="a-object">Which cloud in that file</label>
       <select id="a-object"><option value="">pick a .blend first</option></select>
       <div class="hint" id="a-clouds"></div>
-      <div class="hint">For a scene made before this app: its cloud is already
-        framed and carved in the .blend, but nothing records where on Earth it
-        sits, so it cannot be densified until it is located.</div>
+      <div class="hint">For a scene made before this app. Pick the .blend and
+        it works out what still exists and what has to be recovered.</div>
+      <div id="a-state" style="margin-top:10px"></div>
+      <button class="go" id="a-local" style="display:none">Adopt from what is on disk</button>
     </section>
 
-    <section class="adopt" style="display:none">
+    <section class="adopt locate-only" style="display:none">
       <h2>Where is it, roughly</h2>
       <div class="hint">Click the map near the scene. A few hundred metres out
         is close enough &mdash; the terrain itself supplies the precision.</div>
@@ -180,8 +181,8 @@
       <div id="a-result" style="margin-top:10px"></div>
     </section>
 
-    <section class="adopt" style="display:none">
-      <h2>Adopt</h2>
+    <section class="adopt locate-only" style="display:none">
+      <h2>Download tiles</h2>
       <label for="a-name">Scene name</label>
       <input id="a-name" placeholder="millau">
       <label for="a-out">Scene folder</label>
@@ -612,8 +613,68 @@ function adoptReady(){
 let cloudsTimer = null;
 document.getElementById('a-blend').addEventListener('input', () => {
   clearTimeout(cloudsTimer);
-  cloudsTimer = setTimeout(loadClouds, 600);
+  cloudsTimer = setTimeout(() => { loadClouds(); loadState(); }, 600);
 });
+
+// What route this scene needs is a property of the scene, not something the
+// person should have to know. Ask the server what still exists and say so.
+async function loadState(){
+  const blend = document.getElementById('a-blend').value.trim();
+  const el = document.getElementById('a-state');
+  const localBtn = document.getElementById('a-local');
+  const showLocate = on => document.querySelectorAll('.locate-only').forEach(
+    e => e.style.display = on ? '' : 'none');
+  if (!blend.toLowerCase().endsWith('.blend')){
+    el.innerHTML = ''; localBtn.style.display = 'none'; showLocate(false); return;
+  }
+  let d;
+  try {
+    d = await (await fetch('/api/scene-state', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({blend})})).json();
+  } catch (e) { return; }
+  if (d.error){ el.innerHTML = `<div class="warn">${d.error}</div>`; return; }
+
+  adopt.state = d;
+  if (!document.getElementById('a-name').value.trim())
+    document.getElementById('a-name').value = d.name || '';
+  if (!document.getElementById('a-out').value.trim())
+    document.getElementById('a-out').value = d.scene_dir || '';
+
+  if (d.route === 'ready'){
+    el.innerHTML = `<div class="stat"><span>already adopted</span>`
+      + `<span>scene.json</span></div>`
+      + `<div class="hint">${d.manifest}<br>Nothing to do here: tag the cloud `
+      + `in Blender against that file, then use Render prep.</div>`;
+    localBtn.style.display = 'none'; showLocate(false);
+  } else if (d.route === 'local'){
+    el.innerHTML = `<div class="stat"><span>tiles on disk</span><span>${d.tiles}</span></div>`
+      + (d.plys ? `<div class="stat"><span>clouds on disk</span><span>${d.plys}</span></div>` : '')
+      + `<div class="hint">Everything needed is already here, so nothing has to `
+      + `be downloaded or located: the origin comes from the pipeline files, or `
+      + `from comparing a PLY with the cloud in this .blend.</div>`;
+    localBtn.style.display = ''; showLocate(false);
+  } else {
+    el.innerHTML = `<div class="hint">No tiles and no pipeline files: only the `
+      + `.blend survives. Its position has to be recovered from the terrain, `
+      + `then the tiles downloaded.</div>`;
+    localBtn.style.display = 'none'; showLocate(true);
+  }
+}
+
+document.getElementById('a-local').onclick = async () => {
+  const r = await fetch('/api/adopt', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      blend: document.getElementById('a-blend').value.trim(),
+      scene_dir: (adopt.state || {}).scene_dir,
+      name: document.getElementById('a-name').value.trim(),
+    })});
+  const d = await r.json();
+  if (d.error){ alert(d.error); return; }
+  document.getElementById('jobsec').style.display = 'block';
+  poll(d.job, () => loadState());     // re-check: it should now say "ready"
+};
 
 async function loadClouds(){
   const blend = document.getElementById('a-blend').value.trim();

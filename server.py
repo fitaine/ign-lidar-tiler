@@ -174,7 +174,7 @@ def job_label(job):
                 q = q.parent
         name = q.stem or q.name
     script = job.get("script", "acquire.py")
-    kind = {"acquire.py": "acquire", "prepare_render.py": "render prep",
+    kind = {"acquire.py": "acquire", "prepare_render.py": "render prep", "adopt.py": "adopt",
             "locate_blend.py": "locate"}.get(script, script)
     if "--dry-run" in args:
         kind = "preview"
@@ -461,6 +461,47 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, {"clouds": json.loads(line[7:])})
             return self._send(500, {"error": "could not read the file: "
                                              + (r.stderr or r.stdout)[-300:]})
+
+        if u.path == "/api/scene-state":
+            # What does this scene already have? The answer decides the route,
+            # and asking the person to know it defeats the point of the panel.
+            blend = Path(clean_path(body.get("blend", "")))
+            if not blend.is_file():
+                return self._send(400, {"error": f"not a file: {blend}"})
+            root = blend.parent
+            manifest = next((q for q in (root / "scene.json",
+                                         root / "LIDAR" / "scene.json")
+                             if q.is_file()), None)
+            tiles = list(root.rglob("*.copc.laz"))[:200]
+            plys = [q for q in root.rglob("*.ply")][:50]
+            exports = list(root.rglob("*_export_ply.json"))[:50]
+            if manifest:
+                route = "ready"
+            elif tiles:
+                route = "local"          # everything needed is on disk
+            else:
+                route = "locate"         # only the .blend survives
+            return self._send(200, {
+                "route": route,
+                "scene_dir": str(root),
+                "manifest": str(manifest) if manifest else None,
+                "tiles": len(tiles), "plys": len(plys), "exports": len(exports),
+                "name": root.name.split("_", 1)[-1].lower().replace(" ", "-"),
+            })
+
+        if u.path == "/api/adopt":
+            blend = Path(clean_path(body.get("blend", "")))
+            if not blend.is_file():
+                return self._send(400, {"error": f"not a file: {blend}"})
+            args = ["--scene-dir", clean_path(body.get("scene_dir") or str(blend.parent)),
+                    "--blend", str(blend)]
+            if body.get("name"):
+                args += ["--name", body["name"]]
+            if body.get("origin"):
+                args += ["--origin", str(body["origin"])]
+            jid = uuid.uuid4().hex[:12]
+            ahead = enqueue(jid, args, "adopt.py")
+            return self._send(200, {"job": jid, "ahead": ahead})
 
         if u.path == "/api/locate":
             need = ("blend", "centre")

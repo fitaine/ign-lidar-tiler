@@ -106,6 +106,57 @@ def ply_bounds(path):
         return None
 
 
+def blend_clouds(blend):
+    """The point clouds inside a .blend: name, count and minimum corner.
+
+    Read through Blender because nothing else can open a .blend, and only for
+    what recovering an origin needs.
+    """
+    import subprocess as sp
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from prepare_render import find_blender
+
+    r = sp.run([find_blender(), "-b", str(blend), "--python",
+                str(Path(__file__).resolve().parent / "list_clouds.py")],
+               capture_output=True, text=True, timeout=600)
+    for line in r.stdout.splitlines():
+        if line.startswith("CLOUDS="):
+            return json.loads(line[7:])
+    sys.exit(f"could not read the clouds out of {Path(blend).name}: "
+             f"{(r.stderr or r.stdout)[-400:]}")
+
+
+def origin_from_blend(ply_path, bounds, clouds):
+    """Recover an origin by comparing an absolute PLY with the recentred cloud.
+
+    A PLY exported in absolute Lambert 93 records no origin - there was no
+    translation to record. But the .blend holds the same points recentred, so
+    the offset between the two bounding boxes IS the origin, exactly, with no
+    terrain matching and no guessing. The point counts must match, or they are
+    not the same cloud.
+    """
+    n = ply_point_count(ply_path)
+    same = [c for c in clouds if c.get("points") == n and c.get("min")]
+    if len(same) != 1:
+        return None, (f"{ply_path.name}: {len(same)} clouds in the .blend have "
+                      f"its {n:,} points, so which one it is cannot be told")
+    c = same[0]
+    origin = [round(bounds["minx"] - c["min"][0], 3),
+              round(bounds["miny"] - c["min"][1], 3),
+              round(bounds["minz"] - c["min"][2], 3)]
+    return origin, (f"{ply_path.name}: origin recovered against {c['name']!r} in "
+                    f"the .blend, which holds the same {n:,} points recentred")
+
+
+def ply_point_count(path):
+    with open(path, "rb") as f:
+        head = f.read(4096).decode("ascii", errors="replace")
+    for line in head.splitlines():
+        if line.startswith("element vertex"):
+            return int(line.split()[-1])
+    return -1
+
+
 def voxel_from_suffix(stem, multiplier=1.0):
     """`-NNN` is the nominal radius in centimetres, so voxel = 2 x radius."""
     tail = stem.rsplit("-", 1)[-1]
@@ -144,6 +195,11 @@ def main():
     p.add_argument("--out", default=None, help="Where to write scene.json")
     p.add_argument("--multiplier", type=float, default=1.0,
                    help="Ball radius multiplier to record (1.0 = spheres touch)")
+    p.add_argument("--blend", default=None,
+                   help="The .blend holding the recentred cloud. When a PLY was "
+                        "written in absolute Lambert 93 it records no origin, "
+                        "and comparing it with the same cloud in here recovers "
+                        "one exactly.")
     p.add_argument("--origin", default=None,
                    help="X,Y,Z in Lambert 93, when the origin was recovered some "
                         "other way: from locate_scene.py, or by subtracting a "
@@ -213,6 +269,38 @@ def main():
         problems.append(f"variants disagree on the origin: {uniq}. They will not "
                         f"align with each other; pick one scene per manifest.")
     origin = list(uniq[0]) if uniq else None
+
+    # Nothing on disk records an origin for a PLY written in absolute Lambert
+    # 93, because there was no translation to record. The .blend holds the same
+    # cloud recentred though, so the offset between the two bounding boxes IS
+    # the origin - exactly, by arithmetic, with no terrain matching involved.
+    # Montvernier and the Bunker both landed here, and both were recoverable.
+    if origin is None and a.blend:
+        print("")
+        print(f"no origin on disk; comparing the PLYs with the cloud "
+              f"in {Path(a.blend).name} ...", flush=True)
+        clouds = blend_clouds(a.blend)
+        print(f"  {len(clouds)} cloud(s) in the .blend: "
+              + ", ".join(f"{c['name']} ({c['points']:,})" for c in clouds))
+        found = []
+        for ply in plys:
+            b = ply_bounds(ply)
+            if b is None:
+                continue
+            # only an absolute PLY is a candidate: a recentred one sits near 0
+            if not (100_000 < b["minx"] < 1_300_000 and 6_000_000 < b["miny"] < 7_200_000):
+                continue
+            got, why = origin_from_blend(ply, b, clouds)
+            print(f"  {why}", flush=True)
+            if got:
+                found.append(tuple(got))
+        uniq2 = sorted(set(found))
+        if len(uniq2) == 1:
+            origin = list(uniq2[0])
+            print(f"  -> origin {origin}", flush=True)
+        elif len(uniq2) > 1:
+            problems.append(f"the PLYs imply different origins {uniq2}; pass "
+                            f"--origin to say which one is right")
 
     # An origin worked out elsewhere wins. A PLY written in absolute Lambert 93
     # records none, so the pipeline files cannot supply one - but subtracting
