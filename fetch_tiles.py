@@ -6,9 +6,16 @@ Stage 1a of the IGN LiDAR Tiler (see PLAN.md):
     python fetch_tiles.py --bbox 900000,6418000,903000,6420000 --out ./tiles
 
 The tile index is the Geoplateforme WFS layer
-`IGNF_NUAGES-DE-POINTS-LIDAR-HD:dalle`. Each feature carries the 1 km tile
+`IGNF_LIDAR-HD_METADONNEE:metadata`. Each feature carries the 1 km tile
 footprint in Lambert 93 and a direct download URL. Verified 2026-08-31 against
 tiles already on disk for Mont Aiguille.
+
+IGN retired the old `IGNF_NUAGES-DE-POINTS-LIDAR-HD:dalle` layer some time
+before 2026-09-11; asking for it answers HTTP 400 "Unknown namespace", which
+is what the map grid and every selection turned into. The replacement carries
+the same footprints under different property names - the point cloud URL is
+`url_npl`, and there is no `name` - so `list_tiles` fills in the `name`/`url`
+pair the rest of the app reads.
 
 Selection is by bounding box or by an arbitrary polygon (a GeoJSON file, which
 is what the map's free-shape draw will produce). Either way the unit of
@@ -25,7 +32,7 @@ from pathlib import Path
 import net
 
 WFS = "https://data.geopf.fr/wfs/ows"
-LAYER = "IGNF_NUAGES-DE-POINTS-LIDAR-HD:dalle"
+LAYER = "IGNF_LIDAR-HD_METADONNEE:metadata"
 PAGE = 1000
 UA = {"User-Agent": "ign-lidar-tiler/0.1 (+https://github.com/fitaine/ign-lidar-tiler)"}
 
@@ -42,16 +49,27 @@ def wfs_page(bbox, start):
     return json.loads(net.get(url, timeout=120).decode("utf-8"))
 
 
+def normalise(feature):
+    """Give a feature the `name`/`url`/`id` the rest of the app expects."""
+    props = feature["properties"]
+    if not props.get("url"):
+        url = props.get("url_npl") or ""
+        props["url"] = url
+        props["name"] = Path(urllib.parse.urlparse(url).path).name
+        props.setdefault("id", feature.get("id"))
+    return feature
+
+
 def list_tiles(bbox):
     out, start = [], 0
     while True:
         data = wfs_page(bbox, start)
         feats = data.get("features", [])
-        out.extend(feats)
+        out.extend(normalise(f) for f in feats)
         if len(feats) < PAGE:
             break
         start += PAGE
-    return out
+    return [f for f in out if f["properties"]["url"]]
 
 
 def ring_of(feature):
