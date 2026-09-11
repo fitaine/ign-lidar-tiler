@@ -77,13 +77,24 @@ nothing in the app parses a filename for truth.
 - Map with two switchable base layers, IGN ortho and IGN plan, both already
   known to `lidar_pipeline.py` (`ORTHOIMAGERY.ORTHOPHOTOS`,
   `GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2`).
-- Draw a **rectangle** or a **free polygon**. Both are required.
-- The app overlays the IGN LiDAR HD tile grid, highlights every intersecting
-  tile, and shows the count, the covered area and an estimated download size
-  before anything is fetched.
-- **Crop to shape** is a checkbox. Off: whole 1 km tiles, ragged staircase
-  edge. On: the per-tile crop that already removes the grid anchor is given
-  the drawn polygon instead of the bounding box, so it costs nothing extra.
+- The selection is a **set of tiles**, built with three tools - **rectangle**,
+  **free shape**, and **clicking tiles** one at a time the way IGN's own map
+  does - combined with **New / Add / Subtract** (Shift adds, Alt subtracts).
+  A tile is the unit that gets downloaded, so it is the unit that gets
+  selected: a foreground here and a background eight kilometres away is two
+  shapes and no tiles in between, where one enclosing rectangle would have
+  fetched 33 tiles to use 18.
+- Drawing is a tool you pick up and put down, not a mode you have to leave.
+  With no tool held the map navigates; right-drag and space-drag pan even
+  while one is held, and Escape puts it down.
+- The app overlays the IGN LiDAR HD tile grid, highlights every selected tile,
+  and shows the count, the covered area, the **return count and density**, and
+  the download size before anything is fetched.
+- **Crop to shape** is a checkbox, available once a shape has been drawn. Off:
+  whole 1 km tiles, ragged staircase edge. On: the per-tile crop that already
+  removes the grid anchor is given the drawn shapes instead of the bounding
+  box, so it costs nothing extra. Subtracted shapes become a second crop with
+  `outside: true`, so taking ground back out of a selection carves it out too.
   Default off, since the edge is usually off camera.
 - Download, then run the pipeline once: origin from the full selection, ortho
   fetched once at 0.20 m/px, one **sparse** PLY.
@@ -93,11 +104,26 @@ nothing in the app parses a filename for truth.
   repeat, at most two or three iterations, rather than trusting the formula.
 - Writes `scene.json`.
 
-**Tile index, resolved 2026-08-31.** The Geoplateforme WFS layer
-`IGNF_NUAGES-DE-POINTS-LIDAR-HD:dalle` at `https://data.geopf.fr/wfs/ows`.
-Each feature carries the 1 km footprint in Lambert 93 and a direct download
-URL. Verified by querying Mont Aiguille's footprint and getting back exactly
-the six tiles already on disk, 3.49 GB, matching the local total.
+**Tile index, resolved 2026-08-31, moved 2026-09-11.** The Geoplateforme WFS
+at `https://data.geopf.fr/wfs/ows`. Each feature carries the 1 km footprint in
+Lambert 93 and a direct download URL. Verified by querying Mont Aiguille's
+footprint and getting back exactly the six tiles already on disk, 3.49 GB,
+matching the local total.
+
+The layer was `IGNF_NUAGES-DE-POINTS-LIDAR-HD:dalle` and is now
+`IGNF_LIDAR-HD_METADONNEE:metadata`; the old name answers HTTP 400 "Unknown
+namespace", which emptied the map grid and failed every selection. The
+replacement spells its properties differently - the cloud URL is `url_npl`,
+there is no `name` - so `fetch_tiles.list_tiles` normalises them.
+
+It also carries **`nombre_points`**, IGN's own return count per tile, which
+makes two questions answerable before the download rather than after it:
+whether the target is reachable at all (it cannot exceed the returns that
+exist), and how fine the voxel can go (mean spacing is `sqrt(area/points)`, and
+below it the cells are finer than the scan). `solve_voxel` now refuses an
+answer under that floor instead of finding out by measurement - which is
+exactly the La Plagne failure, where the fit promised 0.238 and the render came
+out of specks.
 
 **Voxel solving, resolved 2026-08-31.** Scale the probe by **area, not raw
 point count**: the downsample output counts occupied voxels, which follow the

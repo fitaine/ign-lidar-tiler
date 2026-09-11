@@ -30,6 +30,8 @@ import tempfile
 from math import log
 from pathlib import Path
 
+from fetch_tiles import native_spacing
+
 PDAL_EXE = r"C:\Program Files\QGIS 3.40.5\bin\pdal.exe"
 
 
@@ -153,9 +155,28 @@ def main():
     if not tiles:
         sys.exit(f"no .copc.laz in {a.tiles}")
 
-    counts = [(t, summary(t)["num_points"]) for t in tiles]
+    summaries = [(t, summary(t)) for t in tiles]
+    counts = [(t, s["num_points"]) for t, s in summaries]
     raw_total = sum(n for _, n in counts)
+    area = sum((s["bounds"]["maxx"] - s["bounds"]["minx"])
+               * (s["bounds"]["maxy"] - s["bounds"]["miny"]) for _, s in summaries)
     counts.sort(key=lambda kv: kv[1])
+
+    # What the scan itself can support, known before any probe runs. Mean
+    # spacing is a hard floor: at a cell finer than the average gap between
+    # returns most cells hold nothing and the few that do hold one point, so
+    # the cloud stops being a surface. This is what La Plagne walked into -
+    # the fit answered 0.238 and the render came out of specks - except there
+    # it took two probe passes and a night to find out.
+    floor = native_spacing(raw_total, area)
+    print(f"{area/1e6:.0f} km2, {raw_total:,} returns, "
+          f"{raw_total/max(area,1):.0f} per m2, mean spacing {floor:.2f} m",
+          flush=True)
+    if a.target > raw_total:
+        print(f"\nthe target of {a.target:,} is more than the {raw_total:,} "
+              f"returns that exist here. No voxel can reach it.", flush=True)
+        if not a.allow_saturated:
+            sys.exit("Refusing to answer. Lower the target or carve a larger area.")
 
     # Scale by AREA, not by raw point count. The downsample output is a count
     # of occupied voxels, which follows the surface, while raw counts follow
@@ -223,7 +244,19 @@ def main():
     # deliver. La Plagne asked for 460M before cropping, the fit answered voxel
     # 0.238, the scene held 208M, and the render was built out of specks. So
     # when the answer lands below the probed range, go and measure it.
-    if target_v < min(v1, v2) * 0.98:
+    if target_v < floor:
+        print(f"\nthe fit answers voxel {target_v:.3f}, which is below this "
+              f"scene's own mean spacing of {floor:.2f} m. There is no surface "
+              f"down there to find - only the same returns, further apart.",
+              flush=True)
+        if not a.allow_saturated:
+            print(f"\nRefusing to answer. Lower the target, carve a larger "
+                  f"area, or pass --allow-saturated if you want the specks "
+                  f"anyway. The finest voxel worth asking for here is "
+                  f"about {floor:.2f} m.", flush=True)
+            sys.exit(2)
+        print("\n--allow-saturated given, answering anyway", flush=True)
+    elif target_v < min(v1, v2) * 0.98:
         target_v, radius = verify_below_range(
             picks, target_v, v1, v2, n1, n2, scene_at_v2, effective_target,
             a.multiplier, a.allow_saturated)

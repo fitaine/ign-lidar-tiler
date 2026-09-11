@@ -54,7 +54,13 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--bbox", help="minx,miny,maxx,maxy in Lambert 93")
-    g.add_argument("--geojson", help="GeoJSON Polygon in Lambert 93")
+    g.add_argument("--geojson", help="GeoJSON Polygon or MultiPolygon, Lambert 93")
+    # The map selects tiles, not ground: clicking one, lassoing a dozen and
+    # subtracting three is a set that no single shape describes. So it says
+    # which tiles, and the drawn shapes come separately as the carve.
+    g.add_argument("--tiles-json", help="JSON list of the tiles to fetch, each "
+                                        "{name, url, points}. What the map's "
+                                        "selection sends.")
     p.add_argument("--name", required=True, help="Scene name")
     p.add_argument("--out", required=True, help="Scene folder")
     p.add_argument("--target", type=int, default=40_000_000,
@@ -83,6 +89,11 @@ def main():
                         "ortho and the manifest are written, nothing else.")
     p.add_argument("--tiles-dir", default=None,
                    help="Existing tile archive to use instead of <out>/tiles")
+    p.add_argument("--carve", default=None,
+                   help="GeoJSON of the ground to keep, used with --tiles-json. "
+                        "Only meaningful with --crop-to-shape.")
+    p.add_argument("--carve-out", default=None,
+                   help="GeoJSON of ground to cut back OUT of the carve")
     p.add_argument("--crop-to-shape", action="store_true",
                    help="Clip to the drawn polygon instead of keeping whole 1 km "
                         "tiles with a staircase edge (costs one extra PDAL pass)")
@@ -96,53 +107,84 @@ def main():
     tiles_dir.mkdir(parents=True, exist_ok=True)
 
     # ── 1. select and download ───────────────────────────────────────────────
-    poly = None
-    if a.geojson:
-        gj = json.loads(Path(a.geojson).read_text(encoding="utf-8"))
-        geom = gj["geometry"] if gj.get("type") == "Feature" else gj
-        poly = geom["coordinates"][0]
-        xs = [q[0] for q in poly]; ys = [q[1] for q in poly]
-        bbox = (min(xs), min(ys), max(xs), max(ys))
+    # `sel` is the selection, one dict per tile: name, url, and the return
+    # count IGN's index reports for it.
+    carve = a.carve or (a.geojson if a.crop_to_shape else None)
+    # The ground actually asked for, which is not the same as the ground the
+    # tiles cover: an adopted scene names a footprint inside one tile, and the
+    # ortho should follow the footprint. Kept separate from the tile extent.
+    polys = want_bbox = None
+    if a.tiles_json:
+        sel = json.loads(Path(a.tiles_json).read_text(encoding="utf-8"))
+        if isinstance(sel, dict):
+            sel = sel.get("tiles", [])
+        if not sel:
+            sys.exit("--tiles-json holds no tiles")
+        sel.sort(key=lambda t: t["name"])
     else:
-        bbox = tuple(float(v) for v in a.bbox.split(","))
+        if a.geojson:
+            gj = json.loads(Path(a.geojson).read_text(encoding="utf-8"))
+            polys = fetch_tiles.rings_of(gj)
+            if not polys:
+                sys.exit("--geojson holds no polygon")
+            feats = fetch_tiles.list_tiles_for(polys)
+        else:
+            want_bbox = tuple(float(v) for v in a.bbox.split(","))
+            feats = fetch_tiles.list_tiles(want_bbox)
+            feats.sort(key=lambda f: f["properties"]["name"])
+        if not feats:
+            sys.exit("no tiles found for that footprint")
+        sel = [{"name": f["properties"]["name"], "url": f["properties"]["url"],
+                "points": f["properties"].get("points") or 0,
+                "area": fetch_tiles.tile_area(f)} for f in feats]
 
-    feats = fetch_tiles.list_tiles(bbox)
-    if poly is not None:
-        feats = [f for f in feats if fetch_tiles.tile_intersects_polygon(f, poly)]
-    if not feats:
-        sys.exit("no tiles found for that footprint")
-    feats.sort(key=lambda f: f["properties"]["name"])
-    print(f"[acquire] {len(feats)} tiles selected", flush=True)
+    if carve:
+        polys = fetch_tiles.rings_of(
+            json.loads(Path(carve).read_text(encoding="utf-8")))
+    shapes = f" from {len(polys)} shapes" if polys and len(polys) > 1 else ""
+    print(f"[acquire] {len(sel)} tiles selected{shapes}", flush=True)
+
+    # ── what IGN says is in them, before a byte is downloaded ────────────────
+    # The index carries a per-tile return count, so the two questions that used
+    # to need the whole download to answer - is there enough here, and how fine
+    # can the voxel go - are answerable now, while the selection can still be
+    # redrawn.
+    wfs_points = sum(t.get("points") or 0 for t in sel)
+    wfs_area = sum(t.get("area") or 1e6 for t in sel)
+    spacing = fetch_tiles.native_spacing(wfs_points, wfs_area)
+    if wfs_points:
+        print(f"[acquire] IGN says {wfs_points:,} returns over "
+              f"{wfs_area/1e6:.0f} km2, {wfs_points/max(wfs_area,1):.0f} per m2, "
+              f"mean spacing {spacing:.2f} m", flush=True)
+        if not a.voxel and not a.no_sparse and a.target > wfs_points:
+            sys.exit(f"[acquire] the target of {a.target:,} points is more than "
+                     f"the {wfs_points:,} returns these tiles hold. No voxel "
+                     f"reaches it - lower the target or select more tiles. "
+                     f"Nothing was downloaded.")
+        if not a.voxel and not a.no_sparse:
+            print(f"[acquire] the finest voxel worth asking for here is about "
+                  f"{spacing:.2f} m; below that the cells are finer than the "
+                  f"scan", flush=True)
 
     # A preview has to answer BEFORE the download, not after it. This used to
     # sit past the download and the readability check, so --dry-run fetched
     # every gigabyte and only then reported what it would have fetched.
     if a.dry_run:
-        urls = [f["properties"]["url"] for f in feats]
+        urls = [t["url"] for t in sel]
         sizes = fetch_tiles.head_sizes(urls)
         here = sum(1 for url, sz in zip(urls, sizes)
                    if sz and (tiles_dir / Path(url.split("?")[0]).name).is_file()
                    and (tiles_dir / Path(url.split("?")[0]).name).stat().st_size == sz)
-        xs, ys = [], []
-        for f in feats:
-            ring = fetch_tiles.ring_of(f)
-            xs += [q[0] for q in ring]
-            ys += [q[1] for q in ring]
         total = sum(sz for sz in sizes if sz)
-        print(f"[acquire] tile footprint {min(xs):.0f},{min(ys):.0f} .. "
-              f"{max(xs):.0f},{max(ys):.0f}  "
-              f"({(max(xs)-min(xs))/1000:.1f} x {(max(ys)-min(ys))/1000:.1f} km)",
-              flush=True)
         print(f"[acquire] {total/1e9:.1f} GB to download"
               + (f", {here} tile(s) already here" if here else ""), flush=True)
-        for f, sz in zip(feats, sizes):
-            print(f"[acquire]   {f['properties']['name']}  "
-                  f"{(sz or 0)/1e6:.0f} MB", flush=True)
+        for t, sz in zip(sel, sizes):
+            print(f"[acquire]   {t['name']}  {(sz or 0)/1e6:.0f} MB", flush=True)
         print(f"[acquire] dry run: nothing downloaded", flush=True)
         return
 
     if not a.skip_download:
-        urls = [f["properties"]["url"] for f in feats]
+        urls = [t["url"] for t in sel]
         sizes = fetch_tiles.head_sizes(urls)
         total_bytes = sum(s for s in sizes if s)
         already = sum(1 for url, s in zip(urls, sizes)
@@ -185,9 +227,16 @@ def main():
                      "ones continue. If they keep failing, IGN is probably down.")
         print(f"[acquire] all {len(urls)} tiles are here", flush=True)
 
-    tiles = sorted(tiles_dir.glob("*.copc.laz"))
+    # A shared tile archive holds more than this scene. Build from the
+    # selection, not from whatever happens to be in the folder.
+    wanted = {t["name"] for t in sel}
+    tiles = sorted(t for t in tiles_dir.glob("*.copc.laz") if t.name in wanted)
     if not tiles:
         sys.exit(f"no tiles in {tiles_dir}")
+    missing = wanted - {t.name for t in tiles}
+    if missing:
+        sys.exit(f"[acquire] {len(missing)} selected tile(s) are not in "
+                 f"{tiles_dir}: {sorted(missing)[:5]}")
 
     # Confirm every tile actually opens. A truncated download is accepted
     # silently by everything until PDAL fails on it much later.
@@ -206,13 +255,16 @@ def main():
     minx = miny = minz = float("inf")
     maxx = maxy = maxz = float("-inf")
     raw_total = 0
+    tile_boxes = []
     for t in tiles:
         s = tile_summary(t)
         b = s["bounds"]
         raw_total += s["num_points"]
+        tile_boxes.append((b["minx"], b["miny"], b["maxx"], b["maxy"]))
         minx = min(minx, b["minx"]); maxx = max(maxx, b["maxx"])
         miny = min(miny, b["miny"]); maxy = max(maxy, b["maxy"])
         minz = min(minz, b["minz"]); maxz = max(maxz, b["maxz"])
+    bbox = (minx, miny, maxx, maxy)
 
     if a.origin:
         origin = [float(v) for v in a.origin.split(",")]
@@ -262,11 +314,15 @@ def main():
     # colour 2.18: 849 MB where 150 would have done, and that repeats for every
     # scene adopted. Pad by a tile of slack so the crop never samples the edge.
     rminx, rminy, rmaxx, rmaxy = minx, miny, maxx, maxy
-    clipped = a.no_sparse or (a.crop_to_shape and poly is not None)
+    clipped = a.no_sparse or (a.crop_to_shape and polys is not None)
     if clipped:
         pad = 50.0
-        rminx = max(minx, bbox[0] - pad); rminy = max(miny, bbox[1] - pad)
-        rmaxx = min(maxx, bbox[2] + pad); rmaxy = min(maxy, bbox[3] + pad)
+        boxes = [fetch_tiles.bbox_of(q) for q in (polys or [])]
+        kept = ((min(b[0] for b in boxes), min(b[1] for b in boxes),
+                 max(b[2] for b in boxes), max(b[3] for b in boxes))
+                if boxes else (want_bbox or bbox))
+        rminx = max(minx, kept[0] - pad); rminy = max(miny, kept[1] - pad)
+        rmaxx = min(maxx, kept[2] + pad); rmaxy = min(maxy, kept[3] + pad)
         saved = 1 - ((rmaxx - rminx) * (rmaxy - rminy)) / ((maxx - minx) * (maxy - miny))
         if saved > 0.05:
             print(f"[acquire] ortho over the {(rmaxx-rminx)/1000:.1f} x "
@@ -274,12 +330,20 @@ def main():
                   f"{(maxx-minx)/1000:.1f} x {(maxy-miny)/1000:.1f} km of tiles "
                   f"({100*saved:.0f}% less to fetch)", flush=True)
 
+    # One rectangle has to span every shape, and for a foreground here and a
+    # background some kilometres away most of that rectangle is ground the
+    # scene never touches. The ortho grid skips any cell no selected LiDAR tile
+    # sits under, so the gap costs nothing.
+    def covered(tx0, ty0, tx1, ty1):
+        return any(bx0 < tx1 and bx1 > tx0 and by0 < ty1 and by1 > ty0
+                   for bx0, by0, bx1, by1 in tile_boxes)
+
     if raster.is_file():
         print(f"[acquire] reusing {raster.name}", flush=True)
     else:
         print(f"[acquire] fetching ortho at {a.raster_res} m/px ...", flush=True)
         lp.fetch_raster_tiled(rminx, rminy, rmaxx, rmaxy, a.raster_res, layer,
-                              str(raster))
+                              str(raster), keep=covered)
 
     # ── 5. sparse PLY ────────────────────────────────────────────────────────
     # Built tile by tile: peak memory then follows the largest tile rather than
@@ -296,7 +360,9 @@ def main():
                             "--voxel", str(voxel), "--origin", ",".join(str(v) for v in origin),
                             "--multiplier", str(a.multiplier),
                             "--name", a.name, "--out", str(out)]
-                           + (["--polygon", a.geojson] if (a.crop_to_shape and a.geojson) else []))
+                           + (["--polygon", carve] if (a.crop_to_shape and carve) else [])
+                           + (["--polygon-out", a.carve_out]
+                              if (a.crop_to_shape and a.carve_out) else []))
         if r.returncode != 0:
             sys.exit(f"densify_tiled failed with {r.returncode}")
 
@@ -313,11 +379,15 @@ def main():
         "origin": origin,
         "bbox": [minx, miny, maxx, maxy],
         "relief": round(maxz - minz, 2),
-        "footprint": ({"type": "Polygon", "coordinates": [poly]} if poly else None),
-        "cropped_to_footprint": bool(a.crop_to_shape and poly),
+        "footprint": ({"type": "MultiPolygon",
+                       "coordinates": [[q] for q in polys]} if polys else None),
+        "shapes": len(polys or []),
+        "cropped_to_footprint": bool(a.crop_to_shape and polys),
         "tiles_dir": str(tiles_dir),
         "tiles": [t.name for t in tiles],
         "raw_points": raw_total,
+        "index_points": wfs_points,
+        "native_spacing": round(spacing, 4),
         "raster": raster.name,
         "raster_res": a.raster_res,
         "radius_multiplier": a.multiplier,

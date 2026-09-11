@@ -62,3 +62,9 @@ server.pid
 # python cache
 __pycache__/
 *.pyc
+
+# Scratch written on every selection, overwritten each time
+_selection.geojson
+_selection.tiles.json
+_carve.geojson
+_carve_out.geojson

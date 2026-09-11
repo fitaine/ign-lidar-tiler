@@ -105,6 +105,50 @@ def list_dir(path):
     return {"path": str(p), "parent": parent, "dirs": dirs, "files": files}
 
 
+DOWNLOAD_HOST = "https://data.geopf.fr/telechargement/"
+
+
+def clean_tiles(raw):
+    """Validate the tile set the map sends.
+
+    It is the map's own set, built from what this server answered, but it
+    arrives over HTTP as a URL to fetch and a filename to write, so it is
+    checked rather than trusted: IGN's download host, and a plain LiDAR HD
+    filename with no path in it.
+    """
+    out = []
+    for t in raw or []:
+        name, url = str(t.get("name") or ""), str(t.get("url") or "")
+        if not url.startswith(DOWNLOAD_HOST):
+            raise ValueError(f"not an IGN download URL: {url[:60]}")
+        if not name.endswith(".copc.laz") or "/" in name or "\\" in name:
+            raise ValueError(f"not a tile filename: {name[:60]}")
+        out.append({"name": name, "url": url,
+                    "points": int(t.get("points") or 0),
+                    "area": float(t.get("area") or 1e6)})
+    if not out:
+        raise ValueError("the selection is empty")
+    return out
+
+
+def lambert_shapes(body):
+    """The drawn selection in Lambert 93, as a list of closed rings.
+
+    `rings` is what the map sends now that a selection can be several shapes;
+    `ring` is the single-shape spelling everything used before, and an adopt
+    or a saved bookmark may still speak it.
+    """
+    raw = body.get("rings")
+    if raw is None:
+        raw = [body["ring"]] if body.get("ring") else []
+    out = []
+    for ring in raw:
+        if not ring or len(ring) < 4:
+            continue
+        out.append([list(to_lambert(lon, lat)) for lon, lat in ring])
+    return out
+
+
 def tiles_as_geojson(feats):
     """Tile footprints, reprojected to WGS84 for the map."""
     out = []
@@ -116,7 +160,9 @@ def tiles_as_geojson(feats):
                          "coordinates": [[list(to_wgs84(x, y)) for x, y in
                                           ((p[0], p[1]) for p in ring)]]},
             "properties": {"name": Path(f["properties"]["url"].split("?")[0]).name,
-                           "url": f["properties"]["url"]},
+                           "url": f["properties"]["url"],
+                           "points": f["properties"].get("points") or 0,
+                           "area": fetch_tiles.tile_area(f)},
         })
     return {"type": "FeatureCollection", "features": out}
 
@@ -307,27 +353,51 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": "bad json"})
 
         if u.path == "/api/select":
-            ring = body.get("ring") or []
-            if len(ring) < 4:
+            # One drawn shape in, the tiles it touches out. The map applies
+            # add/subtract to its own set from there, which is why this does
+            # not know or care what is already selected.
+            polys = lambert_shapes(body)
+            if not polys:
                 return self._send(400, {"error": "need a closed ring of lon/lat"})
-            poly = [list(to_lambert(lon, lat)) for lon, lat in ring]
-            xs = [p[0] for p in poly]; ys = [p[1] for p in poly]
-            bbox = (min(xs), min(ys), max(xs), max(ys))
             try:
-                feats = fetch_tiles.list_tiles(bbox)
+                feats = fetch_tiles.list_tiles_for(polys)
             except Exception as ex:
                 return self._send(502, {"error": f"IGN WFS: {ex}"})
-            feats = [f for f in feats if fetch_tiles.tile_intersects_polygon(f, poly)]
             urls = [f["properties"]["url"] for f in feats]
             sizes = fetch_tiles.head_sizes(urls)
             total = sum(sizes)
             names = [{"name": Path(u.split("?")[0]).name, "bytes": b}
                      for u, b in zip(urls, sizes)]
+            boxes = [fetch_tiles.bbox_of(q) for q in polys] or [(0, 0, 0, 0)]
+            bbox = (min(b[0] for b in boxes), min(b[1] for b in boxes),
+                    max(b[2] for b in boxes), max(b[3] for b in boxes))
+            # What IGN's own index says is under the selection. This is the
+            # whole reason to ask before downloading: 3 GB of tiles takes an
+            # hour to find out what one query already knows.
+            points, area = fetch_tiles.weigh(feats)
             return self._send(200, {
                 "tiles": names, "count": len(names), "bytes": total,
-                "lambert_polygon": poly, "bbox": bbox,
+                "lambert_polygons": polys, "lambert_polygon": polys[0],
+                "shapes": len(polys), "bbox": bbox,
+                "points": points, "area": area,
+                "spacing": round(fetch_tiles.native_spacing(points, area), 3),
                 "geojson": tiles_as_geojson(feats),
             })
+
+        if u.path == "/api/sizes":
+            # How much a set of tiles weighs. Split out from /api/select
+            # because it is the slow half - one HEAD per tile - and the map
+            # only ever needs it for tiles it has not weighed before.
+            urls = body.get("urls") or []
+            if not all(isinstance(v, str) and v.startswith(DOWNLOAD_HOST)
+                       for v in urls):
+                return self._send(400, {"error": "not IGN download URLs"})
+            if len(urls) > 400:
+                return self._send(400, {"error": "too many tiles at once"})
+            try:
+                return self._send(200, {"sizes": fetch_tiles.head_sizes(urls)})
+            except Exception as ex:
+                return self._send(502, {"error": f"IGN: {ex}"})
 
         if u.path == "/api/pick":
             # A real Windows dialog, opened on this machine. The browser cannot
@@ -409,16 +479,48 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/acquire":
             if "name" not in body or "out" not in body:
                 return self._send(400, {"error": "need name and out"})
-            if "ring" not in body and "bbox_l93" not in body:
-                return self._send(400, {"error": "need a ring or a bbox_l93"})
-            # An adopted scene has no drawn ring: its footprint comes from the
-            # cloud that was just located, already in Lambert 93.
-            if body.get("bbox_l93"):
+            if not body.get("tiles") and not body.get("ring") \
+                    and not body.get("rings") and "bbox_l93" not in body:
+                return self._send(400, {"error": "need tiles, a ring or a bbox_l93"})
+            # An adopted scene has no drawn selection: its footprint comes from
+            # the cloud that was just located, already in Lambert 93.
+            if body.get("bbox_l93") and not body.get("tiles"):
                 where = ["--bbox", str(body["bbox_l93"])]
+            elif body.get("tiles"):
+                # The map sends the tile set it holds, because clicking one
+                # tile, lassoing a dozen and subtracting three is a set that no
+                # single shape describes.
+                try:
+                    tiles = clean_tiles(body["tiles"])
+                except ValueError as ex:
+                    return self._send(400, {"error": str(ex)})
+                tj = HERE / "_selection.tiles.json"
+                tj.write_text(json.dumps(tiles), encoding="utf-8")
+                where = ["--tiles-json", str(tj)]
+                # The shapes that were drawn are not the selection, but they
+                # are the carve: the edge to follow when the staircase along
+                # the tile grid is not wanted.
+                for key, flag, fname in (("rings", "--carve", "_carve.geojson"),
+                                         ("rings_out", "--carve-out",
+                                          "_carve_out.geojson")):
+                    qs = lambert_shapes({"rings": body.get(key) or []})
+                    if not qs:
+                        continue
+                    gj = HERE / fname
+                    gj.write_text(json.dumps({"type": "MultiPolygon",
+                                              "coordinates": [[q] for q in qs]}),
+                                  encoding="utf-8")
+                    where += [flag, str(gj)]
             else:
-                ring = [list(to_lambert(lon, lat)) for lon, lat in body["ring"]]
+                polys = lambert_shapes(body)
+                if not polys:
+                    return self._send(400, {"error": "need a closed ring"})
+                # Always a MultiPolygon, even for one shape: acquire, the carve
+                # and PDAL's filters.crop all read it the same way, so a scene
+                # drawn in two pieces needs no separate path.
                 gj = HERE / "_selection.geojson"
-                gj.write_text(json.dumps({"type": "Polygon", "coordinates": [ring]}),
+                gj.write_text(json.dumps({"type": "MultiPolygon",
+                                          "coordinates": [[q] for q in polys]}),
                               encoding="utf-8")
                 where = ["--geojson", str(gj)]
             args = ["--name", body["name"], "--out", clean_path(body["out"])] + where + [

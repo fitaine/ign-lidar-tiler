@@ -65,7 +65,8 @@ def load_footprint(path):
     return outline.multipolygon_wkt(geom)
 
 
-def tile_pipeline(tile, raster, voxel, origin, bounds, out_ply, polygon=None):
+def tile_pipeline(tile, raster, voxel, origin, bounds, out_ply, polygon=None,
+                  polygon_out=None):
     ox, oy, oz = origin
     (minx, miny, maxx, maxy) = bounds
     ax, ay, az = ANCHOR
@@ -99,6 +100,12 @@ def tile_pipeline(tile, raster, voxel, origin, bounds, out_ply, polygon=None):
         # The shape itself, so the edge follows the carve instead of a 1 km
         # staircase along the tile grid.
         stages.append({"type": "filters.crop", "polygon": polygon})
+    if polygon_out:
+        # Ground the selection took back out again. Subtracting is not the same
+        # as never having drawn it: a lasso round a valley with the road cut
+        # back out of it is two shapes, and only the second one says "not here".
+        stages.append({"type": "filters.crop", "polygon": polygon_out,
+                       "outside": True})
     if raster:
         stages.append({"type": "filters.colorization", "raster": str(raster)})
     stages.append({"type": "filters.transformation",
@@ -151,6 +158,9 @@ def main():
                         "intersect it are skipped entirely, and the output is "
                         "cropped to it. Use this when only part of a large "
                         "footprint survives a carve.")
+    p.add_argument("--polygon-out", default=None,
+                   help="GeoJSON of ground to cut back OUT of the carve, the "
+                        "subtract half of the selection")
     p.add_argument("--polygon", default=None,
                    help="GeoJSON Polygon file (Lambert 93) to crop to, instead of "
                         "keeping whole tiles with a staircase edge")
@@ -229,10 +239,14 @@ def main():
     print(f"scene bounds {minx:.0f},{miny:.0f} .. {maxx:.0f},{maxy:.0f}", flush=True)
 
     wkt = None
+    wkt_out = load_footprint(a.polygon_out) if a.polygon_out else None
     if a.polygon:
         wkt = load_footprint(a.polygon)
         islands = wkt.count("((") - 1 if "MULTIPOLYGON" in wkt else 1
         print(f"cropping to the carve footprint ({wkt.count('(') - 2} ring(s))",
+              flush=True)
+    if wkt_out:
+        print(f"and cutting back out of it ({wkt_out.count('(') - 2} ring(s))",
               flush=True)
 
     parts = []
@@ -245,7 +259,8 @@ def main():
             parts.append(part)
             continue
         pipe.write_text(json.dumps(
-            tile_pipeline(t, a.raster, a.voxel, origin, bounds, part, wkt), indent=2),
+            tile_pipeline(t, a.raster, a.voxel, origin, bounds, part, wkt,
+                          wkt_out), indent=2),
             encoding="utf-8")
         r = winrun.run([PDAL_EXE, "pipeline", str(pipe)],
                            capture_output=True, text=True)

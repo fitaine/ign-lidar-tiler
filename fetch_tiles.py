@@ -50,13 +50,18 @@ def wfs_page(bbox, start):
 
 
 def normalise(feature):
-    """Give a feature the `name`/`url`/`id` the rest of the app expects."""
+    """Give a feature the `name`/`url`/`id`/`points` the rest of the app expects.
+
+    `points` is IGN's own count of the returns in that tile, which means the
+    weight of a selection is known before a byte of it is downloaded.
+    """
     props = feature["properties"]
     if not props.get("url"):
         url = props.get("url_npl") or ""
         props["url"] = url
         props["name"] = Path(urllib.parse.urlparse(url).path).name
         props.setdefault("id", feature.get("id"))
+    props.setdefault("points", int(props.get("nombre_points") or 0))
     return feature
 
 
@@ -70,6 +75,32 @@ def list_tiles(bbox):
             break
         start += PAGE
     return [f for f in out if f["properties"]["url"]]
+
+
+def tile_area(feature):
+    """Ground area of one tile in m2. Normally 1 km2, but read rather than
+    assumed: `points` divided by this is what gives the density."""
+    ring = ring_of(feature)
+    xs = [p[0] for p in ring[:-1]]
+    ys = [p[1] for p in ring[:-1]]
+    return (max(xs) - min(xs)) * (max(ys) - min(ys))
+
+
+def weigh(feats):
+    """(points, area_m2) over a set of tiles."""
+    return (sum(f["properties"].get("points") or 0 for f in feats),
+            sum(tile_area(f) for f in feats))
+
+
+def native_spacing(points, area_m2):
+    """Mean distance between returns, sqrt(area / points).
+
+    The floor under any voxel: below it the cells are finer than the scan
+    itself, so shrinking them adds isolated specks rather than surface.
+    """
+    if points <= 0 or area_m2 <= 0:
+        return 0.0
+    return (area_m2 / float(points)) ** 0.5
 
 
 def ring_of(feature):
@@ -97,6 +128,56 @@ def point_in_ring(x, y, ring):
             if x < xin:
                 inside = not inside
     return inside
+
+
+def rings_of(gj):
+    """Every outer ring in a GeoJSON value, as a list of rings.
+
+    A selection is not always one blob. A foreground and a background are two
+    shapes with untouched ground between them, and drawing one rectangle round
+    both would download every tile in the gap. Polygon, MultiPolygon, Feature
+    and FeatureCollection all reduce to the same list here.
+    """
+    if gj.get("type") == "FeatureCollection":
+        out = []
+        for f in gj.get("features", []):
+            out.extend(rings_of(f))
+        return out
+    geom = gj.get("geometry") if gj.get("type") == "Feature" else gj
+    if geom is None:
+        return []
+    if geom["type"] == "Polygon":
+        return [geom["coordinates"][0]]
+    if geom["type"] == "MultiPolygon":
+        return [poly[0] for poly in geom["coordinates"]]
+    raise ValueError(f"expected Polygon or MultiPolygon, got {geom['type']!r}")
+
+
+def bbox_of(poly):
+    xs = [q[0] for q in poly]
+    ys = [q[1] for q in poly]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def list_tiles_for(polys):
+    """Tiles touched by ANY of the shapes, asked for shape by shape.
+
+    One query over the combined bounding box would work, but for the case this
+    exists to serve - a foreground here, a background eight kilometres away -
+    it asks IGN for the whole rectangle between them, and then throws almost
+    all of it away. A query per shape keeps both the question and the answer
+    the size of what was actually drawn.
+    """
+    seen, out = set(), []
+    for poly in polys:
+        for f in list_tiles(bbox_of(poly)):
+            name = f["properties"]["name"]
+            if name in seen or not tile_intersects_polygon(f, poly):
+                continue
+            seen.add(name)
+            out.append(f)
+    out.sort(key=lambda f: f["properties"]["name"])
+    return out
 
 
 def tile_intersects_polygon(feature, poly):
@@ -153,32 +234,27 @@ def main():
     p.add_argument("--manifest", default=None, help="Write the tile list as JSON")
     a = p.parse_args()
 
-    poly = None
+    polys = None
     if a.geojson:
         gj = json.loads(Path(a.geojson).read_text(encoding="utf-8"))
-        geom = gj["geometry"] if gj.get("type") == "Feature" else gj
-        if geom["type"] != "Polygon":
-            sys.exit("--geojson needs a single Polygon")
-        poly = geom["coordinates"][0]
-        xs = [q[0] for q in poly]
-        ys = [q[1] for q in poly]
-        bbox = (min(xs), min(ys), max(xs), max(ys))
+        try:
+            polys = rings_of(gj)
+        except ValueError as ex:
+            sys.exit(str(ex))
+        if not polys:
+            sys.exit("--geojson holds no polygon")
     else:
         bbox = tuple(float(v) for v in a.bbox.split(","))
         if len(bbox) != 4:
             sys.exit("--bbox needs minx,miny,maxx,maxy")
+        polys = [[[bbox[0], bbox[1]], [bbox[2], bbox[1]], [bbox[2], bbox[3]],
+                  [bbox[0], bbox[3]], [bbox[0], bbox[1]]]]
 
-    print(f"querying the IGN LiDAR HD tile index over "
-          f"{bbox[0]:.0f},{bbox[1]:.0f} .. {bbox[2]:.0f},{bbox[3]:.0f} ...", flush=True)
-    feats = list_tiles(bbox)
-    if poly is not None:
-        before = len(feats)
-        feats = [f for f in feats if tile_intersects_polygon(f, poly)]
-        print(f"polygon filter: {before} -> {len(feats)} tiles", flush=True)
+    shapes = f"{len(polys)} shapes" if len(polys) > 1 else "1 shape"
+    print(f"querying the IGN LiDAR HD tile index over {shapes} ...", flush=True)
+    feats = list_tiles_for(polys)
     if not feats:
         sys.exit("no tiles found for that footprint")
-
-    feats.sort(key=lambda f: f["properties"]["name"])
     urls = [f["properties"]["url"] for f in feats]
     sizes = head_sizes(urls)
     rows = []
@@ -189,13 +265,20 @@ def main():
                      "url": url, "bytes": size,
                      "id": f["properties"].get("id"), "ring": ring_of(f)})
 
-    print(f"\n{len(rows)} tiles, {len(rows)} km2, {total/1e9:.2f} GB to download\n")
+    pts, area = weigh(feats)
+    spacing = native_spacing(pts, area)
+    print(f"\n{len(rows)} tiles, {area/1e6:.0f} km2, {total/1e9:.2f} GB to download")
+    print(f"{pts:,} returns, {pts/max(area,1):.0f} per m2, "
+          f"mean spacing {spacing:.2f} m\n")
     for r in rows:
         print(f"  {r['name']:<48} {r['bytes']/1e6:8.1f} MB")
 
     if a.manifest:
         Path(a.manifest).write_text(json.dumps(
-            {"bbox": bbox, "tiles": [{k: r[k] for k in ("name", "url", "bytes", "id")}
+            {"bbox": [min(bbox_of(q)[0] for q in polys),
+                      min(bbox_of(q)[1] for q in polys),
+                      max(bbox_of(q)[2] for q in polys),
+                      max(bbox_of(q)[3] for q in polys)], "tiles": [{k: r[k] for k in ("name", "url", "bytes", "id")}
                                      for r in rows]}, indent=2), encoding="utf-8")
         print(f"\nwrote {a.manifest}")
 

@@ -104,14 +104,19 @@
     <section class="acq">
       <h2>Select</h2>
       <div class="row">
-        <button id="b-nav" class="on">Navigate</button>
         <button id="b-rect">Rectangle</button>
         <button id="b-poly">Free shape</button>
+        <button id="b-tile">Tiles</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="op-new" class="on">New</button>
+        <button id="op-add">Add</button>
+        <button id="op-sub">Subtract</button>
       </div>
       <div class="row" style="margin-top:8px">
         <button id="b-clear">Clear selection</button>
       </div>
-      <div class="hint" id="drawhint">Drag on the map to draw a rectangle.</div>
+      <div class="hint" id="drawhint"></div>
       <div id="sel" style="margin-top:10px"></div>
       <div id="tiles"></div>
     </section>
@@ -329,6 +334,10 @@ const empty = {type:'FeatureCollection', features:[]};
 // stayed permanently empty.
 map.on('style.load', () => {
   map.addSource('grid', {type:'geojson', data:empty});
+  // Transparent, but still hit-tested: this is what makes a tile clickable
+  // across its whole square rather than only along its edge.
+  map.addLayer({id:'grid-hit', type:'fill', source:'grid',
+    paint:{'fill-color':'#7fd1c1','fill-opacity':0}});
   map.addLayer({id:'grid-line', type:'line', source:'grid',
     paint:{'line-color':'#7fd1c1','line-width':0.7,'line-opacity':0.55}});
   map.addSource('hit', {type:'geojson', data:empty});
@@ -341,6 +350,9 @@ map.on('style.load', () => {
     paint:{'fill-color':'#e0a458','fill-opacity':0.15}});
   map.addLayer({id:'sel-line', type:'line', source:'sel',
     paint:{'line-color':'#e0a458','line-width':2}});
+  map.addSource('cut', {type:'geojson', data:empty});
+  map.addLayer({id:'cut-line', type:'line', source:'cut',
+    paint:{'line-color':'#d9737a','line-width':1.6,'line-dasharray':[2,2]}});
   refreshGrid();
 });
 map.on('moveend', refreshGrid);
@@ -419,131 +431,318 @@ function base(which){
 document.getElementById('b-ortho').onclick = () => base('ortho');
 document.getElementById('b-plan').onclick  = () => base('plan');
 
-// ── drawing ─────────────────────────────────────────────────────────────────
-let mode = 'nav', ring = null, dragStart = null, polyPts = [], lasso = false;
+// ── selecting ───────────────────────────────────────────────────────────────
+// The selection is a SET OF TILES, not a shape. A tile is what gets
+// downloaded, so making it what gets selected is what lets a click add one, a
+// lasso add twelve and a second lasso take three back out - none of which a
+// single outline can describe. The shapes are still kept, but only as the
+// carve: the edge to follow when the 1 km staircase is not wanted.
+//
+// Drawing is a tool you pick up and put down. With no tool held the map simply
+// navigates, which is the resting state - there is no Navigate mode to switch
+// back to. Pressing the held tool again, or Escape, puts it down. Right-drag
+// and space-drag pan while a tool IS held, so moving the map never costs a
+// mode change either.
+let tool = null, op = 'new';
+let selected = new Map();          // name -> {name, url, points, area, bytes, ring}
+let carves = [], carvesOut = [];   // the shapes drawn, in Lambert-free lon/lat
+let dragStart = null, polyPts = [], lasso = false, spaceDown = false;
+let paintOp = null, painted = null;
 const hint = document.getElementById('drawhint');
 
-function setMode(m){
-  mode = m; polyPts = []; dragStart = null; lasso = false;
-  for (const pair of [['b-nav','nav'],['b-rect','rect'],['b-poly','poly']])
-    document.getElementById(pair[0]).classList.toggle('on', m===pair[1]);
-  map.dragPan.enable();
-  hint.textContent =
-    m==='nav'  ? 'Drag to move the map. Right-drag pans in any mode.' :
-    m==='rect' ? 'Left-drag to draw a rectangle. Right-drag to pan.' :
-                 'Drag to draw a free shape, or click point by point. Right-drag to pan.';
-}
-document.getElementById('b-nav').onclick  = () => setMode('nav');
-document.getElementById('b-rect').onclick = () => setMode('rect');
-document.getElementById('b-poly').onclick = () => setMode('poly');
-document.getElementById('b-clear').onclick = () => {
-  ring = null; polyPts = [];
-  map.getSource('sel').setData(empty);
-  map.getSource('hit').setData(empty);
-  document.getElementById('sel').innerHTML = '';
-  document.getElementById('tiles').innerHTML = '';
-  document.getElementById('go').disabled = true;
+const HINTS = {
+  null:   'Click a tool to start selecting. The map navigates until you do.',
+  rect:   'Drag a rectangle. Shift adds, Alt subtracts. Right-drag or space-drag pans.',
+  poly:   'Drag a free shape, or click point by point and close it. Shift adds, Alt subtracts.',
+  tile:   'Click a tile to toggle it, or drag across several. Shift adds, Alt subtracts.'
 };
 
-function drawRing(pts, closed){
-  const r = closed ? pts.concat([pts[0]]) : pts;
-  map.getSource('sel').setData({type:'Feature',
-    geometry:{type: closed ? 'Polygon' : 'LineString',
-              coordinates: closed ? [r] : r}, properties:{}});
+function setTool(t){
+  tool = (tool === t) ? null : t;                 // pressing it again puts it down
+  polyPts = []; dragStart = null; lasso = false; paintOp = null;
+  for (const [id, name] of [['b-rect','rect'],['b-poly','poly'],['b-tile','tile']])
+    document.getElementById(id).classList.toggle('on', tool === name);
+  map.dragPan.enable();
+  map.getCanvas().style.cursor = tool ? 'crosshair' : '';
+  hint.textContent = HINTS[tool];
+  drawShapes();
+}
+function setOp(o){
+  op = o;
+  for (const [id, name] of [['op-new','new'],['op-add','add'],['op-sub','sub']])
+    document.getElementById(id).classList.toggle('on', op === name);
+}
+for (const [id, name] of [['b-rect','rect'],['b-poly','poly'],['b-tile','tile']])
+  document.getElementById(id).onclick = () => setTool(name);
+for (const [id, name] of [['op-new','new'],['op-add','add'],['op-sub','sub']])
+  document.getElementById(id).onclick = () => setOp(name);
+setTool(null);
+
+// Shift and Alt override the buttons for one gesture, the way they do in an
+// image editor, so the common case never needs a trip to the toolbar.
+function opFor(e){
+  const ev = (e && e.originalEvent) || e || {};
+  if (ev.shiftKey) return 'add';
+  if (ev.altKey) return 'sub';
+  return op;
 }
 
-const isLeft = e => !e.originalEvent || e.originalEvent.button === 0;
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' && !spaceDown && e.target === document.body){
+    spaceDown = true; map.dragPan.enable();
+    map.getCanvas().style.cursor = 'grab';
+    e.preventDefault();
+  }
+  if (e.key === 'Escape'){
+    if (polyPts.length || dragStart){ polyPts = []; dragStart = null; lasso = false;
+      map.dragPan.enable(); drawShapes(); }
+    else setTool(null);
+  }
+});
+document.addEventListener('keyup', e => {
+  if (e.code === 'Space'){
+    spaceDown = false;
+    map.getCanvas().style.cursor = tool ? 'crosshair' : '';
+  }
+});
 
+// Does this gesture belong to the tool, or should the map just move?
+const drawing = e => tool && !spaceDown && (!e.originalEvent || e.originalEvent.button === 0);
+
+// ── what is drawn on the map ────────────────────────────────────────────────
+function drawShapes(pending, closed){
+  if (!map.getSource || !map.getSource('sel')) return;
+  const poly = r => ({type:'Feature', properties:{},
+    geometry:{type:'Polygon', coordinates:[r.concat([r[0]])]}});
+  const fs = carves.map(poly);
+  if (pending && pending.length > 1)
+    fs.push(closed ? poly(pending) : {type:'Feature', properties:{},
+      geometry:{type:'LineString', coordinates:pending}});
+  map.getSource('sel').setData({type:'FeatureCollection', features:fs});
+  map.getSource('cut').setData({type:'FeatureCollection',
+                                features:carvesOut.map(poly)});
+}
+function drawSelected(){
+  if (!map.getSource || !map.getSource('hit')) return;
+  map.getSource('hit').setData({type:'FeatureCollection',
+    features:[...selected.values()].map(t => ({type:'Feature',
+      properties:{name:t.name},
+      geometry:{type:'Polygon', coordinates:[t.ring]}}))});
+}
+
+// ── applying a gesture to the set ───────────────────────────────────────────
+function apply(tiles, how){
+  if (how === 'new'){ selected = new Map(); carves = []; carvesOut = []; }
+  for (const t of tiles){
+    if (how === 'sub') selected.delete(t.name);
+    else if (!selected.has(t.name)) selected.set(t.name, t);
+  }
+}
+
+async function gestureShape(ring, how){
+  const sel = document.getElementById('sel');
+  sel.innerHTML = '<div class="hint">asking IGN which tiles that touches…</div>';
+  let d;
+  try {
+    const r = await fetch('/api/select', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({rings:[ring]})});
+    d = await r.json();
+  } catch (e) { d = {error: String(e)}; }
+  if (d.error){ sel.innerHTML = '<div class="warn">' + d.error + '</div>'; return; }
+
+  const bytes = new Map((d.tiles || []).map(t => [t.name, t.bytes]));
+  const tiles = d.geojson.features.map(f => ({
+    name: f.properties.name, url: f.properties.url,
+    points: +f.properties.points || 0, area: +f.properties.area || 1e6,
+    bytes: bytes.get(f.properties.name),
+    ring: f.geometry.coordinates[0]}));
+
+  apply(tiles, how);
+  (how === 'sub' ? carvesOut : carves).push(ring);
+  drawShapes(); drawSelected(); sizeUnknown(); report();
+}
+
+function tileAt(lngLat){
+  if (!map.getLayer('grid-hit')) return null;
+  const hits = map.queryRenderedFeatures(map.project(lngLat), {layers:['grid-hit']});
+  if (!hits.length) return null;
+  const f = hits[0];
+  return {name: f.properties.name, url: f.properties.url,
+          points: +f.properties.points || 0, area: +f.properties.area || 1e6,
+          ring: f.geometry.coordinates[0]};
+}
+
+// ── rectangle ───────────────────────────────────────────────────────────────
 map.on('mousedown', e => {
-  if (mode !== 'rect' || !isLeft(e)) return;
+  if (tool !== 'rect' || !drawing(e)) return;
   dragStart = [e.lngLat.lng, e.lngLat.lat];
   map.dragPan.disable();
 });
 map.on('mousemove', e => {
-  if (mode !== 'rect' || !dragStart) return;
-  const x0 = dragStart[0], y0 = dragStart[1], x1 = e.lngLat.lng, y1 = e.lngLat.lat;
-  drawRing([[x0,y0],[x1,y0],[x1,y1],[x0,y1]], true);
+  if (tool !== 'rect' || !dragStart) return;
+  const [x0, y0] = dragStart, x1 = e.lngLat.lng, y1 = e.lngLat.lat;
+  drawShapes([[x0,y0],[x1,y0],[x1,y1],[x0,y1]], true);
 });
 map.on('mouseup', e => {
-  if (mode !== 'rect' || !dragStart || !isLeft(e)) return;
-  const x0 = dragStart[0], y0 = dragStart[1], x1 = e.lngLat.lng, y1 = e.lngLat.lat;
+  if (tool !== 'rect' || !dragStart) return;
+  const [x0, y0] = dragStart, x1 = e.lngLat.lng, y1 = e.lngLat.lat;
   dragStart = null; map.dragPan.enable();
+  drawShapes();
   if (Math.abs(x1-x0) < 1e-5 || Math.abs(y1-y0) < 1e-5) return;
-  ring = [[x0,y0],[x1,y0],[x1,y1],[x0,y1],[x0,y0]];
-  drawRing([[x0,y0],[x1,y0],[x1,y1],[x0,y1]], true);
-  select();
+  gestureShape([[x0,y0],[x1,y0],[x1,y1],[x0,y1]], opFor(e));
 });
-map.on('click', e => {
-  // In adopt mode a click means "the scene is roughly here", not a selection
-  if (document.getElementById('m-adopt').classList.contains('on')){
-    if (isLeft(e)) markFor(e.lngLat);
-    return;
-  }
-  if (mode !== 'poly' || !isLeft(e) || lasso) return;
-  const p = [e.lngLat.lng, e.lngLat.lat];          // click-by-click still works
-  if (polyPts.length > 2){
-    const first = map.project(polyPts[0]), now = map.project(p);
-    if (Math.hypot(first.x-now.x, first.y-now.y) < 12){ closePoly(); return; }
-  }
-  polyPts.push(p);
-  drawRing(polyPts, polyPts.length > 2);
-});
-map.on('dblclick', e => { if (mode === 'poly' && polyPts.length > 2){
-  e.preventDefault(); closePoly(); } });
 
-// Dragging in free-shape mode draws a freehand outline. Clicking vertex by
-// vertex still works, but dragging used to just pan the map, which made the
-// mode look broken.
+// ── free shape: drag to lasso, or click vertex by vertex ────────────────────
 map.on('mousedown', e => {
-  if (mode !== 'poly' || !isLeft(e)) return;
+  if (tool !== 'poly' || !drawing(e)) return;
+  if (polyPts.length) return;                 // mid click-by-click, not a lasso
   lasso = true; polyPts = [[e.lngLat.lng, e.lngLat.lat]];
   map.dragPan.disable();
 });
 map.on('mousemove', e => {
   if (!lasso) return;
   const p = [e.lngLat.lng, e.lngLat.lat];
-  const last = polyPts[polyPts.length - 1];
-  const a = map.project(last), b = map.project(p);
-  if (Math.hypot(a.x-b.x, a.y-b.y) < 4) return;   // thin out the trail
+  const a = map.project(polyPts[polyPts.length - 1]), b = map.project(p);
+  if (Math.hypot(a.x-b.x, a.y-b.y) < 4) return;      // thin out the trail
   polyPts.push(p);
-  drawRing(polyPts, polyPts.length > 2);
+  drawShapes(polyPts, polyPts.length > 2);
 });
 map.on('mouseup', e => {
   if (!lasso) return;
   lasso = false; map.dragPan.enable();
-  if (polyPts.length < 3){ polyPts = []; return; }  // a click, not a drag
-  closePoly();
+  if (polyPts.length < 3){ polyPts = []; drawShapes(); return; }  // a click
+  closePoly(opFor(e));
+});
+map.on('dblclick', e => {
+  if (tool === 'poly' && polyPts.length > 2){ e.preventDefault(); closePoly(op); }
+});
+function closePoly(how){
+  const ring = polyPts.slice();
+  polyPts = [];
+  drawShapes();
+  if (ring.length > 2) gestureShape(ring, how);
+}
+
+// ── tiles: click one, or drag across several ────────────────────────────────
+map.on('mousedown', e => {
+  if (tool !== 'tile' || !drawing(e)) return;
+  const t = tileAt(e.lngLat);
+  if (!t) return;
+  map.dragPan.disable();
+  // A bare click TOGGLES, the way IGN's own map does. Whichever way the first
+  // tile goes is the way the whole stroke goes, so dragging back over a tile
+  // does not undo it mid-drag.
+  const chosen = opFor(e);
+  paintOp = chosen !== 'new' ? chosen : (selected.has(t.name) ? 'sub' : 'add');
+  painted = new Set();
+  paintTile(t);
+});
+map.on('mousemove', e => {
+  if (!paintOp) return;
+  const t = tileAt(e.lngLat);
+  if (t) paintTile(t);
+});
+map.on('mouseup', () => {
+  if (!paintOp) return;
+  paintOp = null; painted = null; map.dragPan.enable();
+  sizeUnknown(); report();
+});
+function paintTile(t){
+  if (painted.has(t.name)) return;
+  painted.add(t.name);
+  apply([t], paintOp);
+  drawSelected(); report();
+}
+
+// The adopt panel means something else entirely by a map click, and it owns
+// the click while it is the panel on show.
+map.on('click', e => {
+  if (!document.getElementById('m-adopt').classList.contains('on')) return;
+  if (!e.originalEvent || e.originalEvent.button === 0) markFor(e.lngLat);
 });
 
-function closePoly(){
-  if (polyPts.length < 3) return;
-  ring = polyPts.concat([polyPts[0]]);
-  drawRing(polyPts, true);
-  polyPts = [];
-  select();
+// ── clearing ────────────────────────────────────────────────────────────────
+document.getElementById('b-clear').onclick = () => {
+  selected = new Map(); carves = []; carvesOut = []; polyPts = [];
+  drawShapes(); drawSelected();
+  map.getSource('sel').setData(empty);
+  document.getElementById('sel').innerHTML = '';
+  document.getElementById('tiles').innerHTML = '';
+  report();
+};
+
+// ── what the selection weighs ───────────────────────────────────────────────
+// The tile index answers points and area outright; only the download size
+// needs a HEAD per tile, so that is asked for separately and only for tiles
+// whose size is not known yet.
+let sizeTimer = null;
+function sizeUnknown(){
+  clearTimeout(sizeTimer);
+  sizeTimer = setTimeout(async () => {
+    const need = [...selected.values()].filter(t => t.bytes === undefined);
+    if (!need.length) return;
+    try {
+      const r = await fetch('/api/sizes', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({urls: need.map(t => t.url)})});
+      const d = await r.json();
+      if (d.sizes) need.forEach((t, i) => { t.bytes = d.sizes[i]; });
+      report();
+    } catch (e) { /* the size is a nicety; the selection still stands */ }
+  }, 250);
 }
 
-// ── selection ───────────────────────────────────────────────────────────────
 const fmtGB = b => (b/1e9).toFixed(2) + ' GB';
-async function select(){
+function report(){
   const sel = document.getElementById('sel');
-  sel.innerHTML = '<div class="hint">asking IGN…</div>';
-  const r = await fetch('/api/select', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify({ring})});
-  const d = await r.json();
-  if (d.error){ sel.innerHTML = '<div class="warn">' + d.error + '</div>'; return; }
-  map.getSource('hit').setData(d.geojson);
-  const minx = d.bbox[0], miny = d.bbox[1], maxx = d.bbox[2], maxy = d.bbox[3];
+  const tiles = [...selected.values()];
+  document.getElementById('go').disabled = tiles.length === 0;
+  document.getElementById('preview').disabled = tiles.length === 0;
+  document.getElementById('crop').disabled = carves.length === 0;
+  if (!tiles.length){ sel.innerHTML = '';
+    document.getElementById('tiles').innerHTML = ''; return; }
+
+  const points = tiles.reduce((a, t) => a + (t.points || 0), 0);
+  const area = tiles.reduce((a, t) => a + (t.area || 1e6), 0);
+  const known = tiles.filter(t => typeof t.bytes === 'number');
+  const bytes = known.reduce((a, t) => a + t.bytes, 0);
+  const spacing = points ? Math.sqrt(area / points) : 0;
+  const shapes = carves.length + carvesOut.length;
+
+  // What the tile index already knows, against what the scene is being asked
+  // for. Both are known here, before anything is downloaded.
+  const target = Math.round(parseFloat(
+    document.getElementById('target').value || '0') * 1e6);
+  let verdict = '';
+  if (points && target > points)
+    verdict = `<div class="warn">${(target/1e6).toFixed(0)}M asked for, but these `
+            + `tiles hold ${(points/1e6).toFixed(0)}M returns in all. No voxel `
+            + `reaches that - select more tiles or lower the target.</div>`;
+  else if (points && target)
+    verdict = `<div class="hint">${(target/1e6).toFixed(0)}M of ${(points/1e6).toFixed(0)}M `
+            + `returns. The finest voxel worth asking for here is about `
+            + `${spacing.toFixed(2)} m.</div>`;
+
   sel.innerHTML =
-    `<div class="stat"><span>tiles</span><span>${d.count}</span></div>` +
-    `<div class="stat"><span>area</span><span>${d.count} km²</span></div>` +
-    `<div class="stat"><span>extent</span><span>${Math.round(maxx-minx)} × ${Math.round(maxy-miny)} m</span></div>` +
-    `<div class="stat"><span>download</span><span>${fmtGB(d.bytes)}</span></div>`;
-  document.getElementById('tiles').innerHTML =
-    d.tiles.map(t => `${t.name} &nbsp; ${(t.bytes/1e6).toFixed(0)} MB`).join('<br>');
-  document.getElementById('go').disabled = d.count === 0;
-  document.getElementById('preview').disabled = d.count === 0;
+    `<div class="stat"><span>tiles</span><span>${tiles.length}</span></div>` +
+    `<div class="stat"><span>area</span><span>${(area/1e6).toFixed(0)} km²</span></div>` +
+    (shapes ? `<div class="stat"><span>shapes</span><span>${carves.length} kept`
+      + (carvesOut.length ? `, ${carvesOut.length} cut` : '') + `</span></div>` : '') +
+    `<div class="stat"><span>returns</span><span>${points.toLocaleString()}</span></div>` +
+    `<div class="stat"><span>density</span><span>${(points/Math.max(area,1)).toFixed(0)} /m²</span></div>` +
+    `<div class="stat"><span>download</span><span>` +
+      (known.length === tiles.length ? fmtGB(bytes)
+        : known.length ? fmtGB(bytes) + ' so far…' : 'asking…') +
+    `</span></div>` + verdict;
+
+  document.getElementById('tiles').innerHTML = tiles
+    .sort((a, b) => a.name < b.name ? -1 : 1)
+    .map(t => `${t.name} &nbsp; ` +
+      (typeof t.bytes === 'number' ? (t.bytes/1e6).toFixed(0) + ' MB' : '…'))
+    .join('<br>');
 }
+document.getElementById('target').addEventListener('input', report);
 
 // ── acquire ─────────────────────────────────────────────────────────────────
 // Preview and acquire send the SAME body apart from one flag, so what the
@@ -552,8 +751,11 @@ async function startAcquire(dryRun){
   const name = document.getElementById('name').value.trim();
   const out  = document.getElementById('out').value.trim();
   if (!name || !out){ alert('Name and output folder are required.'); return; }
+  const tiles = [...selected.values()].map(t =>
+    ({name: t.name, url: t.url, points: t.points, area: t.area}));
+  if (!tiles.length){ alert('Nothing is selected.'); return; }
   const body = {
-    ring: ring, name: name, out: out,
+    tiles: tiles, rings: carves, rings_out: carvesOut, name: name, out: out,
     target: Math.round(parseFloat(document.getElementById('target').value) * 1e6),
     raster_res: parseFloat(document.getElementById('rres').value),
     multiplier: parseFloat(document.getElementById('mult').value),
@@ -575,6 +777,7 @@ document.getElementById('go').onclick = async () => {
 
 // ── panels ──────────────────────────────────────────────────────────────────
 function setPanel(which){
+  if (which !== 'acq') setTool(null);
   for (const mode of ['acq', 'adopt', 'prep']){
     document.querySelectorAll('.' + mode).forEach(e =>
       e.style.display = which===mode ? '' : 'none');
@@ -941,7 +1144,7 @@ document.querySelectorAll('[data-browse]').forEach(b => {
 });
 
 setPanel('acq');
-setMode('nav');
+setTool(null);
 </script>
 </body>
 </html>
