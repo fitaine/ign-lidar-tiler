@@ -539,6 +539,8 @@ class Handler(BaseHTTPRequestHandler):
                 args += ["--no-sparse"]
             if body.get("dry_run"):
                 args += ["--dry-run"]
+            if body.get("download_only"):
+                args += ["--download-only"]
             jid = uuid.uuid4().hex[:12]
             ahead = enqueue(jid, args)
             return self._send(200, {"job": jid, "ahead": ahead})

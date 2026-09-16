@@ -87,6 +87,12 @@ def main():
                    help="Do not build a sparse PLY. For adopting an old scene "
                         "whose proxy is already in its .blend: the tiles, the "
                         "ortho and the manifest are written, nothing else.")
+    # Tiles forgotten on a scene that is already built: fetch them into its
+    # archive and stop. The merge and the ortho are redone afterwards, and the
+    # scene.json already there must not be overwritten by a half-built one.
+    p.add_argument("--download-only", action="store_true",
+                   help="Download and check the selected tiles, then stop. No "
+                        "ortho, no PLY, no scene.json.")
     p.add_argument("--tiles-dir", default=None,
                    help="Existing tile archive to use instead of <out>/tiles")
     p.add_argument("--carve", default=None,
@@ -156,12 +162,12 @@ def main():
         print(f"[acquire] IGN says {wfs_points:,} returns over "
               f"{wfs_area/1e6:.0f} km2, {wfs_points/max(wfs_area,1):.0f} per m2, "
               f"mean spacing {spacing:.2f} m", flush=True)
-        if not a.voxel and not a.no_sparse and a.target > wfs_points:
+        if not a.voxel and not a.no_sparse and not a.download_only                 and a.target > wfs_points:
             sys.exit(f"[acquire] the target of {a.target:,} points is more than "
                      f"the {wfs_points:,} returns these tiles hold. No voxel "
                      f"reaches it - lower the target or select more tiles. "
                      f"Nothing was downloaded.")
-        if not a.voxel and not a.no_sparse:
+        if not a.voxel and not a.no_sparse and not a.download_only:
             print(f"[acquire] the finest voxel worth asking for here is about "
                   f"{spacing:.2f} m; below that the cells are finer than the "
                   f"scan", flush=True)

@@ -152,6 +152,13 @@
       </div>
       <div class="hint">Off, whole 1 km tiles with a staircase edge. On costs
         nothing extra, the crop already runs.</div>
+      <div class="check">
+        <input type="checkbox" id="dlonly">
+        <label for="dlonly" style="margin:0">Only download</label>
+      </div>
+      <div class="hint">Fetch the tiles into the folder's tiles/ and stop: no
+        ortho, no PLY, and an existing scene.json is left untouched. For tiles
+        forgotten on a scene already built.</div>
       <div class="row" style="margin-top:12px">
         <button id="preview" disabled>Preview</button>
         <button class="go" id="go" style="margin-top:0" disabled>Acquire scene</button>
@@ -760,6 +767,7 @@ async function startAcquire(dryRun){
     raster_res: parseFloat(document.getElementById('rres').value),
     multiplier: parseFloat(document.getElementById('mult').value),
     crop_to_shape: document.getElementById('crop').checked,
+    download_only: document.getElementById('dlonly').checked,
     dry_run: !!dryRun
   };
   const r = await fetch('/api/acquire', {method:'POST',
