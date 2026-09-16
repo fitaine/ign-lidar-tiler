@@ -162,7 +162,8 @@ def main():
         print(f"[acquire] IGN says {wfs_points:,} returns over "
               f"{wfs_area/1e6:.0f} km2, {wfs_points/max(wfs_area,1):.0f} per m2, "
               f"mean spacing {spacing:.2f} m", flush=True)
-        if not a.voxel and not a.no_sparse and not a.download_only                 and a.target > wfs_points:
+        if not a.voxel and not a.no_sparse and not a.download_only \
+                and a.target > wfs_points:
             sys.exit(f"[acquire] the target of {a.target:,} points is more than "
                      f"the {wfs_points:,} returns these tiles hold. No voxel "
                      f"reaches it - lower the target or select more tiles. "
@@ -256,6 +257,11 @@ def main():
     if bad:
         sys.exit(f"[acquire] these tiles are unreadable, delete them and re-run "
                  f"to fetch again: {bad}")
+
+    if a.download_only:
+        print(f"[acquire] download only: {len(tiles)} tiles are in {tiles_dir}. "
+              f"No ortho, no PLY, and scene.json was left as it was.", flush=True)
+        return
 
     # ── 2. scene extent and shared origin ────────────────────────────────────
     minx = miny = minz = float("inf")
