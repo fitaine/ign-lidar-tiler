@@ -49,6 +49,8 @@
   .stat span:first-child{flex:0 0 auto}
   .stat span:last-child{color:var(--accent);font-variant-numeric:tabular-nums;
     text-align:right;overflow-wrap:anywhere;min-width:0}
+  /* What only matters when a cloud gets built, greyed out when it will not be. */
+  #buildopts.off{opacity:.4;pointer-events:none}
   .hint{color:var(--muted);font-size:11.5px;margin-top:8px}
   .warn{color:var(--warn)}
   #tiles{max-height:150px;overflow-y:auto;overflow-x:hidden;margin-top:8px;
@@ -123,11 +125,19 @@
 
     <section class="acq">
       <h2>Scene</h2>
+      <div class="check" style="margin-top:0">
+        <input type="checkbox" id="dlonly">
+        <label for="dlonly" style="margin:0">Only download</label>
+      </div>
+      <div class="hint">Fetch the tiles into the folder's tiles/ and stop: no
+        ortho, no PLY, and an existing scene.json is left untouched. For tiles
+        forgotten on a scene already built.</div>
       <label for="name">Name</label>
       <input id="name" placeholder="mont-aiguille">
       <label for="out">Output folder</label>
       <div class="row"><input id="out" placeholder="output folder">
         <button style="flex:0 0 auto" data-browse="out" data-dirs="1">Browse</button></div>
+      <div id="buildopts">
       <div class="row">
         <div>
           <label for="target">Sparse target (M points)</label>
@@ -152,13 +162,7 @@
       </div>
       <div class="hint">Off, whole 1 km tiles with a staircase edge. On costs
         nothing extra, the crop already runs.</div>
-      <div class="check">
-        <input type="checkbox" id="dlonly">
-        <label for="dlonly" style="margin:0">Only download</label>
       </div>
-      <div class="hint">Fetch the tiles into the folder's tiles/ and stop: no
-        ortho, no PLY, and an existing scene.json is left untouched. For tiles
-        forgotten on a scene already built.</div>
       <div class="row" style="margin-top:12px">
         <button id="preview" disabled>Preview</button>
         <button class="go" id="go" style="margin-top:0" disabled>Acquire scene</button>
@@ -312,14 +316,16 @@ if (map.keyboard && map.keyboard.disableRotation) map.keyboard.disableRotation()
 // The pane can size the container after the map is constructed.
 new ResizeObserver(() => map.resize()).observe(document.getElementById('map'));
 
-// Right-drag pans, in every mode, the way it does on any map. MapLibre has no
+// Middle-drag pans, in every mode, the way it does in Blender. MapLibre has no
 // button remapping, so this is wired on the canvas directly.
 (() => {
   const cc = map.getCanvasContainer();
   let last = null;
   cc.addEventListener('contextmenu', e => e.preventDefault());
+  // A middle click would otherwise start the browser's autoscroll.
+  cc.addEventListener('auxclick', e => { if (e.button === 1) e.preventDefault(); });
   cc.addEventListener('mousedown', e => {
-    if (e.button !== 2) return;
+    if (e.button !== 1) return;
     last = {x: e.clientX, y: e.clientY};
     cc.style.cursor = 'grabbing';
     e.preventDefault(); e.stopPropagation();
@@ -330,7 +336,7 @@ new ResizeObserver(() => map.resize()).observe(document.getElementById('map'));
     last = {x: e.clientX, y: e.clientY};
   });
   window.addEventListener('mouseup', e => {
-    if (e.button === 2 && last) { last = null; cc.style.cursor = ''; }
+    if (e.button === 1 && last) { last = null; cc.style.cursor = ''; }
   });
 })();
 
@@ -447,7 +453,7 @@ document.getElementById('b-plan').onclick  = () => base('plan');
 //
 // Drawing is a tool you pick up and put down. With no tool held the map simply
 // navigates, which is the resting state - there is no Navigate mode to switch
-// back to. Pressing the held tool again, or Escape, puts it down. Right-drag
+// back to. Pressing the held tool again, or Escape, puts it down. Middle-drag
 // and space-drag pan while a tool IS held, so moving the map never costs a
 // mode change either.
 let tool = null, op = 'new';
@@ -459,7 +465,7 @@ const hint = document.getElementById('drawhint');
 
 const HINTS = {
   null:   'Click a tool to start selecting. The map navigates until you do.',
-  rect:   'Drag a rectangle. Shift adds, Alt subtracts. Right-drag or space-drag pans.',
+  rect:   'Drag a rectangle. Shift adds, Alt subtracts. Middle-drag or space-drag pans.',
   poly:   'Drag a free shape, or click point by point and close it. Shift adds, Alt subtracts.',
   tile:   'Click a tile to toggle it, or drag across several. Shift adds, Alt subtracts.'
 };
@@ -700,13 +706,25 @@ function sizeUnknown(){
   }, 250);
 }
 
+// Only download: the name, the folder and the selection still matter, nothing
+// about the cloud or the ortho does.
+function applyDownloadOnly(){
+  const only = document.getElementById('dlonly').checked;
+  document.getElementById('buildopts').classList.toggle('off', only);
+  for (const id of ['target', 'rres', 'mult'])
+    document.getElementById(id).disabled = only;
+  document.getElementById('crop').disabled = only || carves.length === 0;
+  document.getElementById('go').textContent = only ? 'Download tiles' : 'Acquire scene';
+}
+document.getElementById('dlonly').addEventListener('change', applyDownloadOnly);
+
 const fmtGB = b => (b/1e9).toFixed(2) + ' GB';
 function report(){
   const sel = document.getElementById('sel');
   const tiles = [...selected.values()];
   document.getElementById('go').disabled = tiles.length === 0;
   document.getElementById('preview').disabled = tiles.length === 0;
-  document.getElementById('crop').disabled = carves.length === 0;
+  applyDownloadOnly();
   if (!tiles.length){ sel.innerHTML = '';
     document.getElementById('tiles').innerHTML = ''; return; }
 
