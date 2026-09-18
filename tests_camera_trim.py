@@ -130,6 +130,27 @@ def check_ortho():
     return failures
 
 
+class ScaledOrthoCamera(OrthoCamera):
+    """Chamechaude's cameras carry an object scale of 287. Cycles ignores a
+    camera's scale, so the trim has to as well, or every point is divided by it
+    and the whole cloud lands in the middle of the frame."""
+
+    matrix_world = Mat(np.diag([287.0, 287.0, 287.0, 1.0]).tolist())
+
+
+def check_scaled_camera():
+    cloud = Cloud([p for p, _ in ORTHO_CASES.values()])
+    keep, _, _ = addon.camera_keep_mask(cloud, ScaledOrthoCamera(), Context(), 0.0)
+    failures = 0
+    for (label, (_, want)), got in zip(ORTHO_CASES.items(), keep):
+        if bool(got) != want:
+            failures += 1
+            print(f"FAIL  scaled camera  {label}: kept={bool(got)}, expected {want}")
+        else:
+            print(f"ok    scaled camera  {label}")
+    return failures
+
+
 def main():
     cloud = Cloud([p for p, _, _ in CASES.values()])
     cam, ctx = Camera(), Context()
@@ -158,6 +179,7 @@ def main():
             print(f"ok    {kwargs}")
 
     failures += check_ortho()
+    failures += check_scaled_camera()
 
     print("\nall good" if not failures else f"\n{failures} failure(s)")
     return 1 if failures else 0

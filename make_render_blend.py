@@ -115,8 +115,10 @@ def find_mesh_to_points(node_group):
     for nd in node_group.nodes:
         if nd.bl_idname == "GeometryNodeMeshToPoints":
             return node_group, nd
-        if nd.bl_idname == "GeometryNodeGroup" and nd.node_group:
-            found = find_mesh_to_points(nd.node_group)
+        # A group node holds its group as `node_tree`; `node_group` is the
+        # modifier's attribute and does not exist on the node.
+        if nd.bl_idname == "GeometryNodeGroup" and nd.node_tree:
+            found = find_mesh_to_points(nd.node_tree)
             if found[1]:
                 return found
     return node_group, None

@@ -56,7 +56,8 @@ def find_mesh_to_points(node_group, _seen=None):
         if nd.bl_idname == "GeometryNodeMeshToPoints":
             return node_group, nd
         if nd.bl_idname == "GeometryNodeGroup":
-            g, n = find_mesh_to_points(nd.node_group, _seen)
+            # The group node's group is `node_tree`, not `node_group`.
+            g, n = find_mesh_to_points(nd.node_tree, _seen)
             if n is not None:
                 return g, n
     return None, None
@@ -286,9 +287,13 @@ def camera_keep_mask(ob, cam, context, margin, near=0.0, far=0.0):
         x=r.resolution_x, y=r.resolution_y,
         scale_x=r.pixel_aspect_x, scale_y=r.pixel_aspect_y,
     )
-    mv = cam.matrix_world.inverted() @ ob.matrix_world
-
-    MV = np.array(mv, dtype=np.float64)
+    # Cycles ignores a camera object's scale, so strip it before inverting.
+    # Left in, it divides every point by the scale: Chamechaude's cameras sit
+    # at 287x, which shrank a 4 km cloud to 17 m in the middle of the frame and
+    # the trim kept everything.
+    C = np.array(cam.matrix_world, dtype=np.float64)
+    C[:3, :3] /= np.linalg.norm(C[:3, :3], axis=0)
+    MV = np.linalg.inv(C) @ np.array(ob.matrix_world, dtype=np.float64)
     P = np.array(proj, dtype=np.float64)
 
     # camera space first: needed for the in-front test and for distances
