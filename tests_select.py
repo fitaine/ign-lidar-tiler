@@ -107,6 +107,62 @@ def test_list_tiles_for():
     return failures
 
 
+# ── the WFS pads its answer; the padding is not ground anyone asked for ─────
+def padded_wfs(bbox, start):
+    """What the Geoplateforme answers: every tile within a tile of the box,
+    with the ~0.2 mm of float noise its rings really carry (IGN's
+    LHD_FXX_0915_6468 spans x 914999.99..915999.99)."""
+    feats = []
+    x0, y0 = int(bbox[0] // 1000 - 1) * 1000, int(bbox[1] // 1000 - 1) * 1000
+    for gy in range(y0, int(bbox[3]) + 2000, 1000):
+        for gx in range(x0, int(bbox[2]) + 2000, 1000):
+            url = feature(gx, gy)["properties"]["url"]
+            f = feature(gx - 0.0099, gy - 0.0098)
+            f["properties"] = {"url_npl": url, "nombre_points": 1}
+            feats.append(f)
+    return {"features": feats[start:start + fetch_tiles.PAGE]}
+
+
+def tile_xy(f):
+    _, _, x, y, _ = f["properties"]["name"].split("_", 4)
+    return int(x), int(y)
+
+
+def test_padded_wfs():
+    real, fetch_tiles.wfs_page = fetch_tiles.wfs_page, padded_wfs
+    try:
+        raw = padded_wfs((916000.5, 6467000.5, 919999.5, 6469999.5), 0)
+        got = fetch_tiles.list_tiles((916000.5, 6467000.5, 919999.5, 6469999.5))
+        # a box drawn exactly on the kilometre lines only touches its
+        # neighbours, and the tiles' float noise must not tip that over
+        edge = fetch_tiles.list_tiles((916000, 6467000, 920000, 6470000))
+        ring = fetch_tiles.list_tiles_for(
+            [[[916000, 6467000], [920000, 6467000], [920000, 6470000],
+              [916000, 6470000], [916000, 6467000]]])
+        # a strip 50 m wide: 0917 and 0918 hold none of its vertices, and
+        # neither their corners nor their centres are inside it
+        strip = fetch_tiles.list_tiles_for(
+            [[[916000.5, 6467300], [919999.5, 6467300], [919999.5, 6467350],
+              [916000.5, 6467350], [916000.5, 6467300]]])
+    finally:
+        fetch_tiles.wfs_page = real
+
+    want = {(x, y) for x in range(916, 920) for y in range(6468, 6471)}
+    failures = 0
+    failures += check(f"the stub pads like IGN ({len(raw['features'])} tiles)",
+                      len(raw["features"]) >= 28)
+    failures += check(f"a box keeps only the {len(want)} tiles under it",
+                      {tile_xy(f) for f in got} == want)
+    failures += check("a box on the kilometre lines takes no neighbour",
+                      {tile_xy(f) for f in edge} == want)
+    failures += check("a shape on the kilometre lines takes no neighbour",
+                      {tile_xy(f) for f in ring} == want)
+    failures += check("a thin strip keeps the tiles it crosses",
+                      {tile_xy(f) for f in strip}
+                      == {(x, 6468) for x in range(916, 920)})
+    return failures
+
+
 # ── what the index says, before anything is downloaded ──────────────────────
 def test_weigh():
     feats = [feature(0, 0, 100_000_000), feature(1000, 0, 44_000_000)]
@@ -186,6 +242,8 @@ def main():
     failures += test_rings_of()
     print("\n--- selecting shape by shape ---")
     failures += test_list_tiles_for()
+    print("\n--- the index answers more than it was asked ---")
+    failures += test_padded_wfs()
     print("\n--- what the index knows ---")
     failures += test_weigh()
     print("\n--- the tile set is checked, not trusted ---")

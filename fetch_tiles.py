@@ -34,6 +34,11 @@ import net
 WFS = "https://data.geopf.fr/wfs/ows"
 LAYER = "IGNF_LIDAR-HD_METADONNEE:metadata"
 PAGE = 1000
+# How far a tile must reach into a box before it counts as under it. The WFS
+# BBOX answer is padded by about a tile on every side, tile rings carry ~0.2 mm
+# of float noise, and a shape drawn on a kilometre line only touches the
+# neighbour; none of those is ground anybody asked for.
+TOUCH = 1.0
 UA = {"User-Agent": "ign-lidar-tiler/0.1 (+https://github.com/fitaine/ign-lidar-tiler)"}
 
 
@@ -66,6 +71,12 @@ def normalise(feature):
 
 
 def list_tiles(bbox):
+    """Tiles that actually lie under `bbox`.
+
+    The WFS answers a BBOX with roughly one extra tile on every side (a 4 x 3
+    km box comes back as 6 x 5 tiles), so its answer is filtered here against
+    each tile's own ring rather than trusted.
+    """
     out, start = [], 0
     while True:
         data = wfs_page(bbox, start)
@@ -74,7 +85,23 @@ def list_tiles(bbox):
         if len(feats) < PAGE:
             break
         start += PAGE
-    return [f for f in out if f["properties"]["url"]]
+    return [f for f in out
+            if f["properties"]["url"] and tile_overlaps_bbox(f, bbox)]
+
+
+def tile_rect(feature):
+    ring = ring_of(feature)
+    xs = [p[0] for p in ring[:-1]]
+    ys = [p[1] for p in ring[:-1]]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def tile_overlaps_bbox(feature, bbox, tol=TOUCH):
+    """True if the tile and the box share more than `tol` in both axes, so a
+    shared edge, or float noise along one, does not count."""
+    tminx, tminy, tmaxx, tmaxy = tile_rect(feature)
+    return (min(tmaxx, bbox[2]) - max(tminx, bbox[0]) > tol and
+            min(tmaxy, bbox[3]) - max(tminy, bbox[1]) > tol)
 
 
 def tile_area(feature):
@@ -180,19 +207,47 @@ def list_tiles_for(polys):
     return out
 
 
-def tile_intersects_polygon(feature, poly):
-    """A 1 km tile is kept if any of its corners or its centre is inside the
-    polygon, or any polygon vertex falls inside the tile. Cheap and adequate
-    at this scale: tiles are 1 km, drawn shapes are far larger."""
-    ring = ring_of(feature)
-    xs = [p[0] for p in ring[:-1]]
-    ys = [p[1] for p in ring[:-1]]
-    tminx, tmaxx, tminy, tmaxy = min(xs), max(xs), min(ys), max(ys)
+def tile_intersects_polygon(feature, poly, tol=TOUCH):
+    """True if the polygon reaches more than `tol` into the tile.
+
+    The tile is shrunk by `tol` first, so a shape drawn along a kilometre line
+    does not pick up the tiles on the far side of it. Then either a tile
+    corner or its centre is inside the polygon (the polygon covers it), or a
+    polygon edge crosses the shrunk tile (which also catches a vertex inside
+    it, and a thin shape passing straight through).
+    """
+    tminx, tminy, tmaxx, tmaxy = tile_rect(feature)
+    tminx, tminy, tmaxx, tmaxy = tminx + tol, tminy + tol, tmaxx - tol, tmaxy - tol
+    if tminx >= tmaxx or tminy >= tmaxy:
+        return False
     pts = [(tminx, tminy), (tmaxx, tminy), (tmaxx, tmaxy), (tminx, tmaxy),
            ((tminx + tmaxx) / 2, (tminy + tmaxy) / 2)]
     if any(point_in_ring(px, py, poly) for px, py in pts):
         return True
-    return any(tminx <= vx <= tmaxx and tminy <= vy <= tmaxy for vx, vy in poly[:-1])
+    rect = (tminx, tminy, tmaxx, tmaxy)
+    return any(segment_hits_rect(poly[i], poly[i + 1], rect)
+               for i in range(len(poly) - 1))
+
+
+def segment_hits_rect(a, b, rect):
+    """Liang-Barsky: does the segment a-b touch the closed rectangle?"""
+    x0, y0 = a[0], a[1]
+    dx, dy = b[0] - x0, b[1] - y0
+    t0, t1 = 0.0, 1.0
+    for p, q in ((-dx, x0 - rect[0]), (dx, rect[2] - x0),
+                 (-dy, y0 - rect[1]), (dy, rect[3] - y0)):
+        if p == 0:
+            if q < 0:
+                return False
+            continue
+        t = q / p
+        if p < 0:
+            t0 = max(t0, t)
+        else:
+            t1 = min(t1, t)
+        if t0 > t1:
+            return False
+    return True
 
 
 def head_size(url):
