@@ -144,6 +144,23 @@ def run_capture(cmd, label):
     return "".join(lines)
 
 
+def carve_coverage(footprint, tiles_dir):
+    """Share of the tile footprint the carve keeps, by area.
+
+    Measured against every tile solve_voxel will read, 1 km2 each, since that
+    is the area its point count scales with. Holes are subtracted.
+    """
+    import outline
+    gj = json.loads(Path(footprint).read_text(encoding="utf-8"))
+    geom = gj["geometry"] if gj.get("type") == "Feature" else gj
+    polys = [geom["coordinates"]] if geom["type"] == "Polygon" else geom["coordinates"]
+    kept = sum(abs(outline.signed_area(poly[0]))
+               - sum(abs(outline.signed_area(h)) for h in poly[1:])
+               for poly in polys)
+    tiles_m2 = max(len(list(Path(tiles_dir).glob("*.copc.laz"))), 1) * 1e6
+    return min(1.0, max(kept, 1.0) / tiles_m2)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -265,7 +282,15 @@ def main():
                   f"{target:,} budget: downsampling to it", flush=True)
 
     if voxel is None:
-        coverage = 1.0
+        # solve_voxel measures the whole tile set, so it has to be told how
+        # much of it the carve keeps, or it spends the budget on the full
+        # footprint and the crop leaves a fraction of the target. This was
+        # measured from the old mask and got lost with it on 2026-09-01;
+        # Chamechaude, trimmed to its camera, would have built far short of
+        # 150M and been stopped by the shortfall guard after the whole build.
+        coverage = 1.0 if a.whole_footprint else carve_coverage(footprint, tiles_dir)
+        print(f"[prep] the carve keeps {100*coverage:.1f}% of the tile footprint",
+              flush=True)
         cmd = [sys.executable, HERE / "solve_voxel.py",
                "--tiles", tiles_dir, "--target", target, "--multiplier", mult,
                "--coverage", f"{coverage:.6f}"]
