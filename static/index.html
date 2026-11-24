@@ -53,6 +53,26 @@
   #buildopts.off{opacity:.4;pointer-events:none}
   .hint{color:var(--muted);font-size:11.5px;margin-top:8px}
   .warn{color:var(--warn)}
+  /* The three stages, stacked rather than side by side. "Acquire / Adopt /
+     Render prep" fitted on one row but meant nothing six weeks later; a
+     sentence each does, and a sentence needs the width. */
+  #modes{display:flex;flex-direction:column;gap:6px;padding:12px 16px 0}
+  #modes button{text-align:left;padding:9px 11px;line-height:1.35}
+  #modes b{display:block;font-size:13px;font-weight:600}
+  #modes i{display:block;font-style:normal;font-size:11.5px;color:var(--muted);
+    margin-top:2px}
+  #modes button.on i{color:#1d3b36}
+  /* "When would I use this one" - shown always, not on hover, because the
+     thing you forget is which stage you are even in. */
+  .lead{padding:12px 16px;border-bottom:1px solid var(--line);background:#171a20;
+    color:var(--muted);font-size:12px;line-height:1.55}
+  .lead b{color:var(--ink);font-weight:600}
+  .lead p{margin:0 0 7px}
+  .lead p:last-child{margin-bottom:0}
+  /* A dotted underline is the only hint that a label has a tooltip behind it.
+     Without it the tooltips exist and nobody ever hovers to find them. */
+  label[title],h2[title],.tt{text-decoration:underline dotted var(--line);
+    text-underline-offset:3px;cursor:help}
   #tiles{max-height:150px;overflow-y:auto;overflow-x:hidden;margin-top:8px;
     font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;
     overflow-wrap:anywhere}
@@ -84,14 +104,55 @@
   <div id="map"></div>
   <div id="side">
     <h1>IGN LiDAR Tiler</h1>
-    <div style="display:flex;padding:10px 16px 0;gap:8px">
-      <button id="m-acq" class="on" style="flex:1">1 · Acquire</button>
-      <button id="m-adopt" style="flex:1">2 · Adopt</button>
-      <button id="m-prep" style="flex:1">3 · Render prep</button>
+    <div id="modes">
+      <button id="m-acq" class="on">
+        <b>1 · Start a new scene from the map</b>
+        <i>Draw an area, download the IGN tiles, get a light cloud to light and frame.</i>
+      </button>
+      <button id="m-adopt">
+        <b>2 · Take over a scene I already made</b>
+        <i>A .blend from before this app. Works out where it sits on the ground.</i>
+      </button>
+      <button id="m-prep">
+        <b>3 · Build the heavy file to render</b>
+        <i>Swaps a dense cloud into the .blend you lit. The last step before rendering.</i>
+      </button>
+    </div>
+
+    <div class="lead acq">
+      <p><b>Use this when you have nothing yet.</b> You pick an area of France on
+        the map, and it downloads the LiDAR tiles under it, fetches the aerial
+        photo for colour, and builds one <b>light</b> point cloud you can
+        actually move around in Blender.</p>
+      <p>What you get: a scene folder with the tiles, a <code>scene.json</code>
+        that remembers where everything is, and a <code>.ply</code> to import.
+        Light on purpose &mdash; lighting and framing come first, density comes
+        last, in stage 3.</p>
+    </div>
+
+    <div class="lead adopt" style="display:none">
+      <p><b>Use this for an old scene the app has never seen.</b> Anything you
+        built before this app existed: the .blend is lit and carved, but there
+        is no <code>scene.json</code>, so the app has no idea which square
+        kilometre of France it belongs to.</p>
+      <p>You point at roughly where it is, and it matches the shape of your
+        terrain against the real ground to find the exact spot &mdash; then
+        downloads the tiles and writes the <code>scene.json</code> that stage 3
+        needs. Your .blend is not modified.</p>
+    </div>
+
+    <div class="lead prep" style="display:none">
+      <p><b>Use this when the look is finished and you are ready to render.</b>
+        It takes the .blend you lit and framed, throws away its light cloud, and
+        puts a dense one in its place &mdash; as many points as your graphics
+        card can hold.</p>
+      <p>Your own .blend is never touched. The result is a separate
+        <code>-HEADLESS.blend</code> for rendering from the command line only:
+        far too heavy to open normally.</p>
     </div>
 
     <section class="acq">
-      <h2>Base layer</h2>
+      <h2 title="Only changes the picture under the grid. Nothing you pick here affects what gets downloaded or built.">Map background</h2>
       <div class="row">
         <button id="b-ortho" class="on">Ortho</button>
         <button id="b-plan">Plan</button>
@@ -104,16 +165,16 @@
     </section>
 
     <section class="acq">
-      <h2>Select</h2>
+      <h2 title="The area of ground you want. Draw it however suits the shape, then add or subtract more until it covers what you need.">Draw the area you want</h2>
       <div class="row">
-        <button id="b-rect">Rectangle</button>
-        <button id="b-poly">Free shape</button>
-        <button id="b-tile">Tiles</button>
+        <button id="b-rect" title="Drag a box. Quickest when the area is roughly square.">Rectangle</button>
+        <button id="b-poly" title="Click corner by corner, double-click to close. For a valley, a ridge or anything that is not a box.">Free shape</button>
+        <button id="b-tile" title="Click individual 1 km squares of the IGN grid. Exact control over which tiles you pay to download.">Tiles</button>
       </div>
       <div class="row" style="margin-top:8px">
-        <button id="op-new" class="on">New</button>
-        <button id="op-add">Add</button>
-        <button id="op-sub">Subtract</button>
+        <button id="op-new" class="on" title="The next shape you draw replaces the selection.">New</button>
+        <button id="op-add" title="The next shape joins the selection. For a foreground here and a background further off - they can be separate islands.">Add</button>
+        <button id="op-sub" title="The next shape is cut OUT of the selection. For punching a hole in the middle of an area you already drew.">Subtract</button>
       </div>
       <div class="row" style="margin-top:8px">
         <button id="b-clear">Clear selection</button>
@@ -124,27 +185,27 @@
     </section>
 
     <section class="acq">
-      <h2>Scene</h2>
+      <h2 title="Where the scene is written and how dense its light cloud is.">Name it, then download</h2>
       <div class="check" style="margin-top:0">
         <input type="checkbox" id="dlonly">
-        <label for="dlonly" style="margin:0">Only download</label>
+        <label for="dlonly" style="margin:0" title="Fetches tiles and nothing else. Use it when a scene is already built and you realised it needs another tile or two - it will not overwrite the scene.json or rebuild the cloud.">Just download tiles, build nothing</label>
       </div>
       <div class="hint">Fetch the tiles into the folder's tiles/ and stop: no
         ortho, no PLY, and an existing scene.json is left untouched. For tiles
         forgotten on a scene already built.</div>
-      <label for="name">Name</label>
+      <label for="name" title="Used for every file this scene produces, so keep it short and lowercase with dashes: mont-aiguille gives mont-aiguille-074.ply. It is also the name you will see in stage 3.">Name</label>
       <input id="name" placeholder="mont-aiguille">
-      <label for="out">Output folder</label>
+      <label for="out" title="Everything lands here: the downloaded tiles, the aerial photo, the PLY and the scene.json. One folder per scene. Usually the dated folder you already keep in PicturesD.">Output folder</label>
       <div class="row"><input id="out" placeholder="output folder">
         <button style="flex:0 0 auto" data-browse="out" data-dirs="1">Browse</button></div>
       <div id="buildopts">
       <div class="row">
         <div>
-          <label for="target">Sparse target (M points)</label>
+          <label for="target" title="How heavy the LIGHT cloud is, in millions of points. This one goes in your working .blend, so it has to stay navigable: 15-40M moves smoothly, 60M starts to drag. It has nothing to do with the density you render at - that is stage 3.">Light cloud size (M points)</label>
           <input id="target" type="number" value="40" min="1" step="1">
         </div>
         <div>
-          <label for="rres">Ortho m/px</label>
+          <label for="rres" title="Resolution of the aerial photo that colours the points. 0.20 is what IGN actually flew, and the only one worth using for a real render. The coarser ones are for a quick look: they download in a fraction of the time and the colour goes mushy.">Photo detail (m/px)</label>
           <select id="rres">
             <option value="0.20" selected>0.20 native</option>
             <option value="0.50">0.50 quick</option>
@@ -152,30 +213,33 @@
           </select>
         </div>
       </div>
-      <label for="mult">Ball radius multiplier</label>
+      <label for="mult" title="Leave at 1.0 unless you know why. Each point is drawn as a sphere, and 1.0 sizes those spheres so they just touch their neighbours. Above 1.0 they overlap and the surface looks blobby; below, gaps open up.">Ball radius multiplier</label>
       <input id="mult" type="number" value="1.0" min="0.1" step="0.05">
-      <div class="hint">1.0 = spheres touch without overlapping. The radius itself
-        is derived from the voxel, never typed.</div>
+      <div class="hint">Leave at 1.0: spheres touch without overlapping. The
+        radius itself is worked out from the spacing, never typed &mdash; the
+        number ends up in the filename, like
+        <code>-074</code> meaning 0.74.</div>
       <div class="check">
         <input type="checkbox" id="crop">
-        <label for="crop" style="margin:0">Clip to the drawn shape</label>
+        <label for="crop" style="margin:0" title="On, the cloud stops exactly at your shape. Off, you get whole 1 km tiles, so the edge is a staircase of square corners. Costs nothing either way.">Cut the edge to my shape, not to whole tiles</label>
       </div>
-      <div class="hint">Off, whole 1 km tiles with a staircase edge. On costs
-        nothing extra, the crop already runs.</div>
+      <div class="hint">Unticked you get whole 1 km tiles, so the edge is a
+        staircase of square corners. Ticking it costs nothing extra &mdash; the
+        crop runs either way.</div>
       </div>
       <div class="row" style="margin-top:12px">
-        <button id="preview" disabled>Preview</button>
-        <button class="go" id="go" style="margin-top:0" disabled>Acquire scene</button>
+        <button id="preview" disabled title="Asks IGN which tiles your shape needs and how many megabytes that is. Downloads nothing - always worth a click first.">Preview</button>
+        <button class="go" id="go" style="margin-top:0" disabled title="Downloads the tiles, fetches the aerial photo and builds the light cloud. The long one: tens of minutes to hours depending on the area.">Download and build the scene</button>
       </div>
-      <div class="hint">Preview asks IGN which tiles the shape needs and how
-        much they weigh, and downloads nothing.</div>
+      <div class="hint">Preview first: it asks IGN which tiles your shape needs
+        and how many megabytes that is, without downloading any of them.</div>
     </section>
 
     <section class="adopt" style="display:none">
-      <h2>The .blend to adopt</h2>
+      <h2 title="The Blender file holding the point cloud you already lit. It is read, never written.">Which .blend are we taking over</h2>
       <div class="row"><input id="a-blend" placeholder="the .blend holding the cloud">
         <button style="flex:0 0 auto" data-browse="a-blend" data-ext=".blend">Browse</button></div>
-      <label for="a-object">Which cloud in that file</label>
+      <label for="a-object" title="If the file holds several point clouds, say which one is the terrain. A matte background or a separate foreground would give the wrong footprint.">Which cloud inside that file</label>
       <select id="a-object"><option value="">pick a .blend first</option></select>
       <div class="hint" id="a-clouds"></div>
       <div class="hint">For a scene made before this app. Pick the .blend and
@@ -185,26 +249,26 @@
     </section>
 
     <section class="adopt locate-only" style="display:none">
-      <h2>Where is it, roughly</h2>
+      <h2 title="A starting guess for the search. The terrain matching does the precise part.">Roughly where on the map is it</h2>
       <div class="hint">Click the map near the scene. A few hundred metres out
         is close enough &mdash; the terrain itself supplies the precision.</div>
       <div id="a-mark" class="hint" style="margin-top:8px">nothing marked yet</div>
-      <label for="a-radius">Search half-width (m)</label>
+      <label for="a-radius" title="How far from your click it is allowed to look, in metres. Bigger is slower but more forgiving of a rough click. It must exceed half the width of your cloud, or there is no room to slide it around while searching.">How far around your click to search (m)</label>
       <input id="a-radius" type="number" value="2500" min="500" step="250">
       <div class="hint">Must be more than half the cloud's own size, or there is
         nowhere to slide it.</div>
-      <button class="go" id="a-locate" disabled>Locate it</button>
+      <button class="go" id="a-locate" disabled title="Matches the shape of your terrain against the real ground to find where it sits, to the metre.">Find where it is</button>
       <div id="a-result" style="margin-top:10px"></div>
     </section>
 
     <section class="adopt locate-only" style="display:none">
-      <h2>Download tiles</h2>
-      <label for="a-name">Scene name</label>
+      <h2 title="Downloads the source tiles under the located footprint and writes the scene.json stage 3 needs.">Download its tiles and remember it</h2>
+      <label for="a-name" title="Short and lowercase with dashes. Names the files this scene produces from here on, and labels it in stage 3.">Scene name</label>
       <input id="a-name" placeholder="millau">
-      <label for="a-out">Scene folder</label>
+      <label for="a-out" title="Where the downloaded tiles, the aerial photo and the scene.json go. Normally the folder the .blend already lives in.">Scene folder</label>
       <div class="row"><input id="a-out" placeholder="where tiles and scene.json go">
         <button style="flex:0 0 auto" data-browse="a-out" data-dirs="1">Browse</button></div>
-      <label for="a-rres">Ortho m/px</label>
+      <label for="a-rres" title="Resolution of the aerial photo used for colour. 0.20 is what IGN flew and the only one for a real render; 0.50 is a quick look.">Photo detail (m/px)</label>
       <select id="a-rres">
         <option value="0.20" selected>0.20 native</option>
         <option value="0.50">0.50 quick</option>
@@ -216,51 +280,55 @@
     </section>
 
     <section class="prep" style="display:none">
-      <h2>Source scene</h2>
-      <label for="p-scene">scene.json</label>
+      <h2 title="Two files: the manifest that says where the source tiles are, and the .blend whose lighting and framing you want to keep.">Which scene, and which .blend</h2>
+      <label for="p-scene" title="The manifest written by stage 1 or stage 2. It records the source tiles, the aerial photo, and the origin that ties Lambert 93 coordinates to Blender space. Sits in the scene folder.">The scene.json of that scene</label>
       <div class="row"><input id="p-scene" placeholder="scene.json">
         <button style="flex:0 0 auto" data-browse="p-scene" data-ext=".json">Browse</button></div>
-      <label for="p-blend">Lit, carved .blend</label>
+      <label for="p-blend" title="Your own working file, with the lighting, the cameras and the carve you want kept. It is opened read-only: the dense result is saved beside it under a new name.">Your lit .blend to copy the look from</label>
       <div class="row"><input id="p-blend" placeholder="the .blend you lit">
         <button style="flex:0 0 auto" data-browse="p-blend" data-ext=".blend">Browse</button></div>
-      <button id="p-load" style="width:100%;margin-top:10px">Load manifest</button>
+      <button id="p-load" style="width:100%;margin-top:10px" title="Reads the scene.json and shows what it contains - tiles, point counts, which clouds already exist. Do this before building.">Read the scene and show me what is in it</button>
       <div id="p-info" style="margin-top:10px"></div>
     </section>
 
     <section class="prep" style="display:none">
-      <h2>Dense variant</h2>
-      <label for="p-target">Target (M points)</label>
+      <h2 title="How many points to aim for and which ground to cover. Defaults are right unless a render ran out of memory.">How dense, and over what ground</h2>
+      <label for="p-target" title="How many millions of points to aim for in the render. This is a ceiling, not a promise: if the scan itself was not sampled finely enough to reach it, the fill check stops the build rather than hand you a cloud that renders as specks. It then tells you to use a coarser setting.">Aim for this many points (M)</label>
       <input id="p-target" type="number" value="150" min="1" step="5">
-      <div class="hint">VRAM is the limit, not time. 150M peaks at 10.2 GB of a
-        12 GB card and renders 900 tiles in about 58 h. 172M reaches 11.5 GB and
-        goes memory-bound.</div>
-      <label for="p-cell">Outline step (m)</label>
+      <div class="hint">Memory is the limit, not time. 150M peaks at 10.2 GB of a
+        12 GB card and renders 900 tiles in about 58 h; 172M reaches 11.5 GB and
+        goes memory-bound, which makes it slower, not faster.<br>If the scan was
+        too coarse to reach your number, the build stops and says so rather than
+        handing you specks.</div>
+      <label for="p-cell" title="How finely the carve outline is traced, in metres. Smaller follows your carve more tightly and takes longer to work out. It only ever decides the OUTLINE: nothing inside the shape is dropped, whatever you set here.">How closely to follow your carve (m)</label>
       <input id="p-cell" type="number" value="4.0" min="0.5" step="0.5">
-      <div class="hint">How closely the footprint follows your carve. It only
-        traces the shape &mdash; nothing inside it is ever filtered, so this
-        cannot remove points the way the old mask did.</div>
+      <div class="hint">4 m is right for almost everything. It only traces the
+        outline &mdash; nothing inside the shape is ever filtered, so this
+        cannot delete points.</div>
       <div class="check">
         <input type="checkbox" id="p-crop">
-        <label for="p-crop" style="margin:0">Ignore the carve, process every tile</label>
+        <label for="p-crop" style="margin:0" title="Normally the dense cloud is built only where your carve kept points, which is what concentrates the points on what the camera sees. Tick this to build every tile instead - needed when the .blend was never carved, and wasteful when it was.">Build every tile, ignoring my carve</label>
       </div>
-      <div class="hint">On by default: the proxy's outline cuts the source
-        tiles, so islands stay islands and holes you cut stay holes. Everything
-        inside is kept, and the cloud is only downsampled if it holds more
-        points than the budget. Tick to ignore the carve and process every
-        tile.</div>
+      <div class="hint"><b>Leave this unticked.</b> Unticked, your carve decides
+        the ground: islands stay islands, holes you cut stay holes, and every
+        point inside is kept &mdash; downsampled only if there are more than
+        the budget allows. That is what puts the points where the camera
+        looks.<br>Tick it only if the .blend was never carved, in which case
+        there is no shape to follow and all the tiles are built.</div>
       <div class="check">
         <input type="checkbox" id="p-vol">
-        <label for="p-vol" style="margin:0">Remove volumetrics</label>
+        <label for="p-vol" style="margin:0" title="Deletes fog and atmosphere from the render file. They are expensive, but they are usually the point of the image - only use this to measure what the cloud alone costs.">Strip out the fog and atmosphere</label>
       </div>
       <div class="hint">Off by default: volumetrics are part of the image.
         Tick this only to measure what the point cloud alone costs.</div>
       <div class="hint warn" id="p-volwarn" style="display:none">The render will
         have no fog or atmosphere. This changes the look, not just the speed.</div>
-      <label for="p-out">Output .blend (optional)</label>
+      <label for="p-out" title="Leave empty and it names itself after the scene and the point count, next to your own .blend. Only fill this in to put it somewhere else.">Where to save the render file (optional)</label>
       <input id="p-out" placeholder="auto: <name> - 150M-HEADLESS.blend">
-      <button class="go" id="p-go" disabled>Prepare render file</button>
-      <div class="hint">The result is for headless rendering only. Do not open
-        it in the GUI.</div>
+      <button class="go" id="p-go" disabled title="Builds the dense cloud and writes the headless .blend. Checks the surface actually closes before saving anything, and stops if it does not.">Build the render file</button>
+      <div class="hint warn">The result is for rendering from the command line
+        only &mdash; do not open it in Blender normally. Your own .blend is
+        untouched, so keep working in that one.</div>
     </section>
 
     <section id="jobsec" style="display:none">
