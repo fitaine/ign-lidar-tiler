@@ -196,27 +196,44 @@ def main():
     # ── extending: the scene's own tiles join the selection ─────────────────
     # You draw only the ground you are ADDING; the tiles already in the scene
     # are added here, so the extent, the ortho and the rebuilt cloud all cover
-    # the whole thing. They are looked up in IGN's index rather than faked,
-    # because the download loop needs a url and a size - and it skips a tile
-    # that is already complete on disk, so nothing is fetched twice.
+    # the whole thing.
+    #
+    # A tile already sitting in the archive needs no url: nothing is going to
+    # download it. Asking IGN for one anyway made every extension depend on
+    # their index being up, and when it answered with something that was not
+    # JSON the whole job died in a traceback before a byte moved. Only tiles
+    # that are genuinely absent are looked up, and that lookup is allowed to
+    # fail with a sentence.
     added_names = [t["name"] for t in sel]
     if a.extend:
         have = [n for n in man.get("tiles", []) if n not in set(added_names)]
-        if have:
-            known = {}
-            for f in fetch_tiles.list_tiles(tuple(man["bbox"])):
-                q = f["properties"]
-                known[q["name"]] = {"name": q["name"], "url": q["url"],
-                                    "points": q.get("points") or 0,
-                                    "area": fetch_tiles.tile_area(f)}
-            lost = [n for n in have if n not in known]
+        on_disk = [n for n in have if (tiles_dir / n).is_file()
+                   and (tiles_dir / n).stat().st_size > 0]
+        absent = [n for n in have if n not in set(on_disk)]
+        sel += [{"name": n, "url": None, "points": 0, "area": 1e6,
+                 "have": True} for n in on_disk]
+        if absent:
+            print(f"[acquire] {len(absent)} tile(s) the manifest lists are not "
+                  f"in {tiles_dir}; asking IGN for them", flush=True)
+            try:
+                known = {}
+                for f in fetch_tiles.list_tiles(tuple(man["bbox"])):
+                    q = f["properties"]
+                    known[q["name"]] = {"name": q["name"], "url": q["url"],
+                                        "points": q.get("points") or 0,
+                                        "area": fetch_tiles.tile_area(f)}
+            except Exception as ex:
+                sys.exit(f"[acquire] IGN's tile index did not answer, so the "
+                         f"{len(absent)} missing tile(s) cannot be fetched "
+                         f"({type(ex).__name__}). Nothing was downloaded - try "
+                         f"again in a minute.")
+            lost = [n for n in absent if n not in known]
             if lost:
                 sys.exit(f"[acquire] {len(lost)} tile(s) in the manifest are "
-                         f"not in IGN's index for its own bbox: {lost[:3]}. "
-                         f"The manifest's bbox and tiles disagree; nothing was "
-                         f"downloaded.")
-            sel += [known[n] for n in have]
-            sel.sort(key=lambda t: t["name"])
+                         f"neither on disk nor in IGN's index for its own "
+                         f"bbox: {lost[:3]}. Nothing was downloaded.")
+            sel += [known[n] for n in absent]
+        sel.sort(key=lambda t: t["name"])
         print(f"[acquire] extending {man.get('name')}: "
               f"{len(have)} tile(s) already in the scene, "
               f"{len(added_names)} being added", flush=True)
@@ -242,8 +259,12 @@ def main():
         print(f"[acquire] IGN says {wfs_points:,} returns over "
               f"{wfs_area/1e6:.0f} km2, {wfs_points/max(wfs_area,1):.0f} per m2, "
               f"mean spacing {spacing:.2f} m", flush=True)
+        # Tiles already in the archive are never looked up, so their returns
+        # are not in this total. Aborting on a partial count would refuse a
+        # target the scene can reach comfortably.
+        partial = any(not t.get("url") for t in sel)
         if not a.voxel and not a.no_sparse and not a.download_only \
-                and a.target > wfs_points:
+                and not partial and a.target > wfs_points:
             sys.exit(f"[acquire] the target of {a.target:,} points is more than "
                      f"the {wfs_points:,} returns these tiles hold. No voxel "
                      f"reaches it - lower the target or select more tiles. "
@@ -257,12 +278,16 @@ def main():
     # sit past the download and the readability check, so --dry-run fetched
     # every gigabyte and only then reported what it would have fetched.
     if a.dry_run:
-        urls = [t["url"] for t in sel]
+        # A tile already in the archive carries no url: there is nothing to
+        # ask IGN about and nothing to fetch.
+        dl = [t for t in sel if t.get("url")]
+        urls = [t["url"] for t in dl]
         sizes = fetch_tiles.head_sizes(urls)
         def complete(url, sz):
             f = tiles_dir / Path(url.split("?")[0]).name
             return bool(sz) and f.is_file() and f.stat().st_size == sz
-        here = sum(1 for url, sz in zip(urls, sizes) if complete(url, sz))
+        here = (len(sel) - len(dl)
+                + sum(1 for url, sz in zip(urls, sizes) if complete(url, sz)))
         # Only what is actually missing. Reporting the whole selection made an
         # extension that adds two tiles to a nine-tile scene look like a 3.5 GB
         # download when 400 MB of it was new.
@@ -270,7 +295,10 @@ def main():
                     if sz and not complete(url, sz))
         print(f"[acquire] {total/1e9:.1f} GB to download"
               + (f", {here} tile(s) already here" if here else ""), flush=True)
-        for t, url, sz in zip(sel, urls, sizes):
+        for t in sel:
+            if not t.get("url"):
+                print(f"[acquire]   {t['name']}   already here", flush=True)
+        for t, url, sz in zip(dl, urls, sizes):
             print(f"[acquire]   {t['name']}  {(sz or 0)/1e6:.0f} MB"
                   + ("   already here" if complete(url, sz) else "   NEW"),
                   flush=True)
@@ -278,7 +306,9 @@ def main():
         return
 
     if not a.skip_download:
-        urls = [t["url"] for t in sel]
+        # Tiles already in the archive carry no url and are not fetched.
+        dl = [t for t in sel if t.get("url")]
+        urls = [t["url"] for t in dl]
         sizes = fetch_tiles.head_sizes(urls)
         total_bytes = sum(s for s in sizes if s)
         already = sum(1 for url, s in zip(urls, sizes)
