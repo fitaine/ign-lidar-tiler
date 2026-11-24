@@ -61,8 +61,10 @@ def main():
     g.add_argument("--tiles-json", help="JSON list of the tiles to fetch, each "
                                         "{name, url, points}. What the map's "
                                         "selection sends.")
-    p.add_argument("--name", required=True, help="Scene name")
-    p.add_argument("--out", required=True, help="Scene folder")
+    # Not required when --extend supplies them from the manifest; checked
+    # below once the manifest has been read.
+    p.add_argument("--name", help="Scene name")
+    p.add_argument("--out", help="Scene folder")
     p.add_argument("--target", type=int, default=40_000_000,
                    help="Sparse target point count (default 40M)")
     p.add_argument("--voxel", type=float, default=None,
@@ -95,6 +97,21 @@ def main():
                         "ortho, no PLY, no scene.json.")
     p.add_argument("--tiles-dir", default=None,
                    help="Existing tile archive to use instead of <out>/tiles")
+    # Adding ground to a scene that is already lit and framed. Everything that
+    # would move the existing cloud - the origin above all - is taken from the
+    # manifest rather than derived again, and the manifest is merged rather
+    # than rewritten, so the variants and renders already recorded survive.
+    p.add_argument("--extend", default=None, metavar="SCENE_JSON",
+                   help="Add ground to an existing scene. Its origin, tile "
+                        "folder, name and output folder come from the manifest "
+                        "unless overridden, its tiles join the selection, and "
+                        "the manifest is updated in place.")
+    p.add_argument("--added-only", action="store_true",
+                   help="With --extend: build the new ground as a SEPARATE "
+                        "cloud instead of rebuilding the whole scene. For a "
+                        "distant background, which wants its own coarser "
+                        "voxel. It shares the scene's origin, so it lands in "
+                        "the same place in Blender.")
     p.add_argument("--carve", default=None,
                    help="GeoJSON of the ground to keep, used with --tiles-json. "
                         "Only meaningful with --crop-to-shape.")
@@ -106,6 +123,38 @@ def main():
     p.add_argument("--dry-run", action="store_true",
                    help="Report the selection, extent and origin, then stop")
     a = p.parse_args()
+
+    # ── extending: the manifest decides everything that must not move ────────
+    man = man_path = None
+    if a.extend:
+        man_path = Path(a.extend)
+        if not man_path.is_file():
+            sys.exit(f"--extend: not a file: {man_path}")
+        try:
+            man = json.loads(man_path.read_text(encoding="utf-8"))
+        except Exception as ex:
+            sys.exit(f"--extend: {man_path} is not readable JSON: {ex}")
+        # The origin is the whole point. Deriving it again from a wider set of
+        # tiles would move the local frame under a .blend that is already lit
+        # and framed, and every camera in it would be pointing somewhere else.
+        if not a.origin and man.get("origin"):
+            a.origin = ",".join(str(v) for v in man["origin"])
+        a.name = a.name or man.get("name")
+        a.out = a.out or str(man_path.parent)
+        a.tiles_dir = a.tiles_dir or man.get("tiles_dir")
+        if man.get("radius_multiplier") and p.get_default("multiplier") == a.multiplier:
+            a.multiplier = man["radius_multiplier"]
+        if man.get("raster_res") and p.get_default("raster_res") == a.raster_res:
+            a.raster_res = man["raster_res"]
+        if not a.origin:
+            sys.exit(f"--extend: {man_path.name} records no origin, so there "
+                     f"is nothing to keep the new ground aligned to. Adopt the "
+                     f"scene first.")
+    elif a.added_only:
+        sys.exit("--added-only only means something with --extend")
+
+    if not a.name or not a.out:
+        sys.exit("need --name and --out (or --extend, which supplies both)")
 
     out = Path(a.out)
     tiles_dir = Path(a.tiles_dir) if a.tiles_dir else out / "tiles"
@@ -144,6 +193,37 @@ def main():
                 "points": f["properties"].get("points") or 0,
                 "area": fetch_tiles.tile_area(f)} for f in feats]
 
+    # ── extending: the scene's own tiles join the selection ─────────────────
+    # You draw only the ground you are ADDING; the tiles already in the scene
+    # are added here, so the extent, the ortho and the rebuilt cloud all cover
+    # the whole thing. They are looked up in IGN's index rather than faked,
+    # because the download loop needs a url and a size - and it skips a tile
+    # that is already complete on disk, so nothing is fetched twice.
+    added_names = [t["name"] for t in sel]
+    if a.extend:
+        have = [n for n in man.get("tiles", []) if n not in set(added_names)]
+        if have:
+            known = {}
+            for f in fetch_tiles.list_tiles(tuple(man["bbox"])):
+                q = f["properties"]
+                known[q["name"]] = {"name": q["name"], "url": q["url"],
+                                    "points": q.get("points") or 0,
+                                    "area": fetch_tiles.tile_area(f)}
+            lost = [n for n in have if n not in known]
+            if lost:
+                sys.exit(f"[acquire] {len(lost)} tile(s) in the manifest are "
+                         f"not in IGN's index for its own bbox: {lost[:3]}. "
+                         f"The manifest's bbox and tiles disagree; nothing was "
+                         f"downloaded.")
+            sel += [known[n] for n in have]
+            sel.sort(key=lambda t: t["name"])
+        print(f"[acquire] extending {man.get('name')}: "
+              f"{len(have)} tile(s) already in the scene, "
+              f"{len(added_names)} being added", flush=True)
+        if not added_names:
+            sys.exit("[acquire] the selection adds no tile this scene does not "
+                     "already have. Nothing to do.")
+
     if carve:
         polys = fetch_tiles.rings_of(
             json.loads(Path(carve).read_text(encoding="utf-8")))
@@ -179,14 +259,21 @@ def main():
     if a.dry_run:
         urls = [t["url"] for t in sel]
         sizes = fetch_tiles.head_sizes(urls)
-        here = sum(1 for url, sz in zip(urls, sizes)
-                   if sz and (tiles_dir / Path(url.split("?")[0]).name).is_file()
-                   and (tiles_dir / Path(url.split("?")[0]).name).stat().st_size == sz)
-        total = sum(sz for sz in sizes if sz)
+        def complete(url, sz):
+            f = tiles_dir / Path(url.split("?")[0]).name
+            return bool(sz) and f.is_file() and f.stat().st_size == sz
+        here = sum(1 for url, sz in zip(urls, sizes) if complete(url, sz))
+        # Only what is actually missing. Reporting the whole selection made an
+        # extension that adds two tiles to a nine-tile scene look like a 3.5 GB
+        # download when 400 MB of it was new.
+        total = sum(sz for url, sz in zip(urls, sizes)
+                    if sz and not complete(url, sz))
         print(f"[acquire] {total/1e9:.1f} GB to download"
               + (f", {here} tile(s) already here" if here else ""), flush=True)
-        for t, sz in zip(sel, sizes):
-            print(f"[acquire]   {t['name']}  {(sz or 0)/1e6:.0f} MB", flush=True)
+        for t, url, sz in zip(sel, urls, sizes):
+            print(f"[acquire]   {t['name']}  {(sz or 0)/1e6:.0f} MB"
+                  + ("   already here" if complete(url, sz) else "   NEW"),
+                  flush=True)
         print(f"[acquire] dry run: nothing downloaded", flush=True)
         return
 
@@ -258,6 +345,25 @@ def main():
         sys.exit(f"[acquire] these tiles are unreadable, delete them and re-run "
                  f"to fetch again: {bad}")
 
+    # The tile folder can hold more than this selection (a scene extended
+    # twice, a shared archive), so the solver and the builder get the list too.
+    only = out / "_selection.txt"
+    only.write_text("\n".join(t.name for t in tiles), encoding="utf-8")
+
+    # A background eight kilometres away wants its own coarser voxel, and the
+    # foreground that is already lit must not be rebuilt under it. Solve and
+    # build over the ADDED tiles alone; the shared origin is what keeps the two
+    # clouds in register once both are in the .blend.
+    build_only = only
+    if a.extend and a.added_only:
+        build_only = out / "_added.txt"
+        build_only.write_text(
+            "\n".join(t.name for t in tiles if t.name in set(added_names)),
+            encoding="utf-8")
+        print(f"[acquire] --added-only: solving and building over the "
+              f"{len(added_names)} added tile(s); the cloud already in your "
+              f".blend is left alone", flush=True)
+
     if a.download_only:
         print(f"[acquire] download only: {len(tiles)} tiles are in {tiles_dir}. "
               f"No ortho, no PLY, and scene.json was left as it was.", flush=True)
@@ -299,7 +405,7 @@ def main():
         import solve_voxel
         print(f"[acquire] solving voxel for {a.target:,} points ...", flush=True)
         r = winrun.run([sys.executable, str(Path(__file__).parent / "solve_voxel.py"),
-                            "--tiles", str(tiles_dir), "--target", str(a.target)],
+                            "--tiles", str(tiles_dir), "--only", str(build_only), "--target", str(a.target)],
                            capture_output=True, text=True)
         print(r.stdout, flush=True)
         if r.returncode != 0:
@@ -350,12 +456,24 @@ def main():
         return any(bx0 < tx1 and bx1 > tx0 and by0 < ty1 and by1 > ty0
                    for bx0, by0, bx1, by1 in tile_boxes)
 
-    if raster.is_file():
+    # The ortho only holds imagery under the tiles it was fetched for, so it is
+    # reused only when it was fetched for a superset of this selection. An
+    # extended scene otherwise colours its new tiles from blank cells.
+    raster_tiles = raster.with_suffix(".tiles.json")
+    need = sorted(t.name for t in tiles)
+    had = (json.loads(raster_tiles.read_text(encoding="utf-8"))
+           if raster_tiles.is_file() else [])
+    if raster.is_file() and set(need) <= set(had):
         print(f"[acquire] reusing {raster.name}", flush=True)
     else:
+        if raster.is_file():
+            print(f"[acquire] {raster.name} was fetched for other tiles, "
+                  f"fetching it again", flush=True)
+            raster.unlink()
         print(f"[acquire] fetching ortho at {a.raster_res} m/px ...", flush=True)
         lp.fetch_raster_tiled(rminx, rminy, rmaxx, rmaxy, a.raster_res, layer,
                               str(raster), keep=covered)
+        raster_tiles.write_text(json.dumps(need), encoding="utf-8")
 
     # ── 5. sparse PLY ────────────────────────────────────────────────────────
     # Built tile by tile: peak memory then follows the largest tile rather than
@@ -368,7 +486,7 @@ def main():
     else:
         print(f"[acquire] building {ply.name} tile by tile ...", flush=True)
         r = winrun.stream([sys.executable, str(Path(__file__).parent / "densify_tiled.py"),
-                            "--tiles", str(tiles_dir), "--raster", str(raster),
+                            "--tiles", str(tiles_dir), "--only", str(build_only), "--raster", str(raster),
                             "--voxel", str(voxel), "--origin", ",".join(str(v) for v in origin),
                             "--multiplier", str(a.multiplier),
                             "--name", a.name, "--out", str(out)]
@@ -410,7 +528,74 @@ def main():
         }]),
         "renders": [],
     }
-    (out / "scene.json").write_text(json.dumps(scene, indent=2), encoding="utf-8")
+
+    # ── extending: merge into the manifest, never replace it ────────────────
+    # A rewrite would throw away the variants the scene has built up and the
+    # renders it has recorded, which is most of what the manifest is for. Only
+    # the facts that the new ground actually changes are overwritten.
+    dest = man_path if a.extend else (out / "scene.json")
+    if a.extend:
+        merged = dict(man)
+        merged.update({
+            "bbox": scene["bbox"],
+            "relief": scene["relief"],
+            "tiles_dir": scene["tiles_dir"],
+            "tiles": scene["tiles"],
+            "raw_points": scene["raw_points"],
+            "index_points": scene["index_points"],
+            "native_spacing": scene["native_spacing"],
+            "raster": scene["raster"],
+            "raster_res": scene["raster_res"],
+        })
+        # The origin came FROM the manifest; say so loudly if that ever stops
+        # being true, because a moved origin invalidates every camera.
+        if [round(v, 3) for v in merged.get("origin", [])] != \
+           [round(v, 3) for v in origin]:
+            sys.exit(f"[acquire] refusing to write: the origin changed from "
+                     f"{merged.get('origin')} to {origin}. Everything in the "
+                     f".blend is positioned against the old one.")
+        # A carve recorded for the old, smaller scene no longer describes it.
+        if merged.get("footprint") and added_names:
+            merged["footprint"] = None
+            merged["shapes"] = 0
+            merged["cropped_to_footprint"] = False
+            print(f"[acquire] the recorded footprint covered the old extent "
+                  f"only, so it has been cleared. Re-carve in Blender before "
+                  f"the next render prep, or it will build every tile.",
+                  flush=True)
+        vs = [v for v in merged.get("variants", []) if v.get("file") != ply.name]
+        if not a.no_sparse:
+            vs.append({
+                "role": "background" if a.added_only else "sparse",
+                "file": ply.name, "voxel": voxel, "radius": radius,
+                "points": n_out,
+                "covers": "added tiles only" if a.added_only else "whole scene",
+            })
+        merged["variants"] = vs
+        merged["extended"] = (merged.get("extended") or []) + [{
+            "date": date.today().isoformat(),
+            "added": sorted(added_names),
+            "separate_cloud": bool(a.added_only),
+        }]
+        # Keep the previous manifest until the new one is safely written.
+        bak = man_path.with_suffix(".json.bak")
+        bak.write_text(json.dumps(man, indent=2), encoding="utf-8")
+        scene = merged
+        print(f"[acquire] previous manifest kept as {bak.name}", flush=True)
+
+    dest.write_text(json.dumps(scene, indent=2), encoding="utf-8")
+
+    if a.extend:
+        print(f"\n[acquire] {man.get('name')} now has {len(scene['tiles'])} "
+              f"tiles ({len(added_names)} added), "
+              f"{scene['raw_points']:,} raw points", flush=True)
+        if a.added_only:
+            print(f"[acquire] import {ply.name} ALONGSIDE the cloud already in "
+                  f"your .blend - same origin, so it lands in register",
+                  flush=True)
+        elif not a.no_sparse:
+            print(f"[acquire] re-import {ply.name} in place of the old light "
+                  f"cloud; your cameras and lighting are unaffected", flush=True)
 
     if a.no_sparse:
         print(f"\n[acquire] tiles, ortho and manifest are ready; the light cloud "
@@ -419,7 +604,7 @@ def main():
         print(f"\n[acquire] {ply.name}: {n_out:,} points, "
               f"{ply.stat().st_size/1e9:.2f} GB")
         print(f"[acquire] radius {radius:.4f}")
-    print(f"[acquire] wrote {out/'scene.json'}")
+    print(f"[acquire] wrote {dest}")
 
 
 if __name__ == "__main__":

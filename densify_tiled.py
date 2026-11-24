@@ -166,10 +166,17 @@ def main():
                         "keeping whole tiles with a staircase edge")
     p.add_argument("--keep-parts", action="store_true",
                    help="Do not delete the per-tile PLYs")
+    p.add_argument("--only", default=None,
+                   help="Text file of tile names, one per line: use just these "
+                        "out of the folder, which may hold other scenes' tiles")
     a = p.parse_args()
 
     tiles_dir = Path(a.tiles)
     tiles = sorted(tiles_dir.glob("*.copc.laz"))
+
+    if a.only:
+        keep = {l.strip() for l in Path(a.only).read_text(encoding="utf-8").splitlines() if l.strip()}
+        tiles = [t for t in tiles if t.name in keep]
     if not tiles:
         sys.exit(f"no .copc.laz in {tiles_dir}")
 

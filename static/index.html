@@ -113,8 +113,12 @@
         <b>2 · Take over a scene I already made</b>
         <i>A .blend from before this app. Works out where it sits on the ground.</i>
       </button>
+      <button id="m-ext">
+        <b>3 · Add more ground to a scene</b>
+        <i>Extend a scene you already have, or add a distant background. Keeps its origin.</i>
+      </button>
       <button id="m-prep">
-        <b>3 · Build the heavy file to render</b>
+        <b>4 · Build the heavy file to render</b>
         <i>Swaps a dense cloud into the .blend you lit. The last step before rendering.</i>
       </button>
     </div>
@@ -141,6 +145,18 @@
         needs. Your .blend is not modified.</p>
     </div>
 
+    <div class="lead ext" style="display:none">
+      <p><b>Use this when a scene is missing ground.</b> The framing is good but
+        part of the shot is empty, or you want a ridge eight kilometres off as
+        a background. Pick the scene, and the tiles it already owns are drawn
+        on the map &mdash; then draw only what you want to <b>add</b>.</p>
+      <p>The scene keeps its <b>origin</b>, which is what holds everything in
+        place: your cameras, your lighting and the cloud already in your .blend
+        do not move. The new ground simply appears where there was nothing.
+        Your manifest is updated rather than replaced, so the clouds and
+        renders it already records survive.</p>
+    </div>
+
     <div class="lead prep" style="display:none">
       <p><b>Use this when the look is finished and you are ready to render.</b>
         It takes the .blend you lit and framed, throws away its light cloud, and
@@ -151,7 +167,7 @@
         far too heavy to open normally.</p>
     </div>
 
-    <section class="acq">
+    <section class="acq ext">
       <h2 title="Only changes the picture under the grid. Nothing you pick here affects what gets downloaded or built.">Map background</h2>
       <div class="row">
         <button id="b-ortho" class="on">Ortho</button>
@@ -164,7 +180,7 @@
       <div class="hint" id="gridstat"></div>
     </section>
 
-    <section class="acq">
+    <section class="acq ext">
       <h2 title="The area of ground you want. Draw it however suits the shape, then add or subtract more until it covers what you need.">Draw the area you want</h2>
       <div class="row">
         <button id="b-rect" title="Drag a box. Quickest when the area is roughly square.">Rectangle</button>
@@ -277,6 +293,71 @@
         the ortho and writes scene.json. No light cloud is built: the one in
         your .blend is the one you carved.</div>
       <button class="go" id="a-go" disabled>Download tiles and write scene.json</button>
+    </section>
+
+    <section class="ext" style="display:none">
+      <h2 title="The manifest of the scene you are adding to. Its origin, its
+tile folder and its name all come from here.">Which scene are we adding to</h2>
+      <div class="row"><input id="x-scene" placeholder="its scene.json">
+        <button style="flex:0 0 auto" data-browse="x-scene" data-ext=".json">Browse</button></div>
+      <button id="x-load" style="width:100%;margin-top:10px"
+        title="Reads the manifest, draws the tiles it already owns on the map, and flies there.">
+        Load it and show me what it covers</button>
+      <div id="x-info" style="margin-top:10px"></div>
+    </section>
+
+    <section class="ext" style="display:none">
+      <h2 title="What to do with the ground you drew.">What to build from the new ground</h2>
+      <div class="check" style="margin-top:0">
+        <input type="checkbox" id="x-sep">
+        <label for="x-sep" style="margin:0" title="Unticked, the whole scene is
+rebuilt as one cloud at one density, and you re-import it in place of the old
+one. Ticked, only the new ground is built, as a cloud of its own - which is
+what a distant background wants, because it can be far coarser than the
+foreground without anyone noticing.">Build the new ground as its own separate cloud</label>
+      </div>
+      <div class="hint">For a <b>background</b> far from the scene: it gets its
+        own, coarser density, and the cloud already in your .blend is left
+        alone. You import the new one alongside it &mdash; the shared origin
+        puts it in register.<br>Leave unticked when you are simply extending
+        the same piece of ground: the whole scene is rebuilt as one cloud, and
+        you re-import it in place of the old one.</div>
+      <div class="row" style="margin-top:10px">
+        <div>
+          <label for="x-target" title="Millions of points for the cloud being
+built. If it is a separate background, this covers the new ground alone, so a
+smaller number goes a long way.">Light cloud size (M points)</label>
+          <input id="x-target" type="number" value="40" min="1" step="1">
+        </div>
+        <div>
+          <label for="x-rres" title="Resolution of the aerial photo. The photo
+has to be fetched again to cover the new ground, so this is the slow part -
+0.50 is a reasonable choice while you are still deciding.">Photo detail (m/px)</label>
+          <select id="x-rres">
+            <option value="0.20" selected>0.20 native</option>
+            <option value="0.50">0.50 quick</option>
+            <option value="1.00">1.00 draft</option>
+          </select>
+        </div>
+      </div>
+      <div class="hint">The photo is refetched over the new extent. For a
+        distant background that is one rectangle spanning both pieces &mdash;
+        but the empty middle is skipped, so you only pay for ground that has
+        tiles under it.</div>
+      <div class="check">
+        <input type="checkbox" id="x-dlonly">
+        <label for="x-dlonly" style="margin:0" title="Fetches the tiles and
+stops. No photo, no cloud, and the manifest is left exactly as it is.">
+          Just download the tiles, build nothing</label>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button id="x-preview" disabled title="Asks IGN which tiles your shape
+needs and how many are genuinely new. Downloads nothing.">Preview</button>
+        <button class="go" id="x-go" style="margin-top:0" disabled
+          title="Downloads the new tiles, refetches the photo, rebuilds the cloud and updates the manifest in place.">
+          Add this ground to the scene</button>
+      </div>
+      <div class="hint warn" id="x-warn" style="display:none"></div>
     </section>
 
     <section class="prep" style="display:none">
@@ -434,6 +515,16 @@ map.on('style.load', () => {
   map.addSource('cut', {type:'geojson', data:empty});
   map.addLayer({id:'cut-line', type:'line', source:'cut',
     paint:{'line-color':'#d9737a','line-width':1.6,'line-dasharray':[2,2]}});
+  // Ground the scene being extended ALREADY owns. Deliberately a different
+  // colour from the selection: the whole question in stage 4 is which tiles
+  // you have and which you are adding, and that has to be visible at a
+  // glance, not read off a list.
+  map.addSource('own', {type:'geojson', data:empty});
+  map.addLayer({id:'own-fill', type:'fill', source:'own',
+    paint:{'fill-color':'#6f8cff','fill-opacity':0.18}});
+  map.addLayer({id:'own-line', type:'line', source:'own',
+    paint:{'line-color':'#6f8cff','line-width':1.4}});
+  paintOwned(false);
   refreshGrid();
 });
 map.on('moveend', refreshGrid);
@@ -788,6 +879,7 @@ document.getElementById('dlonly').addEventListener('change', applyDownloadOnly);
 
 const fmtGB = b => (b/1e9).toFixed(2) + ' GB';
 function report(){
+  extRefresh();                        // stage 4 reads the same selection
   const sel = document.getElementById('sel');
   const tiles = [...selected.values()];
   document.getElementById('go').disabled = tiles.length === 0;
@@ -870,15 +962,138 @@ document.getElementById('go').onclick = async () => {
 };
 
 // ── panels ──────────────────────────────────────────────────────────────────
+const MODES = ['acq', 'adopt', 'ext', 'prep'];
 function setPanel(which){
-  if (which !== 'acq') setTool(null);
-  for (const mode of ['acq', 'adopt', 'prep']){
-    document.querySelectorAll('.' + mode).forEach(e =>
-      e.style.display = which===mode ? '' : 'none');
-    document.getElementById('m-' + (mode==='acq' ? 'acq' : mode))
-      .classList.toggle('on', which===mode);
-  }
+  // The map background and the drawing tools are shared by stage 1 and stage
+  // 4, so a section can carry two mode classes. Asking each element whether it
+  // belongs to the active mode gets that right; assigning per mode in a loop
+  // did not, because the last mode processed won.
+  if (which !== 'acq' && which !== 'ext') setTool(null);
+  document.querySelectorAll('.' + MODES.join(',.')).forEach(e =>
+    e.style.display = e.classList.contains(which) ? '' : 'none');
+  for (const m of MODES)
+    document.getElementById('m-' + m).classList.toggle('on', which === m);
+  paintOwned(which === 'ext');
 }
+// ── stage 4: add ground to a scene that already exists ──────────────────────
+// The scene's own tiles are drawn on the map and held here, so the selection
+// can be split into "already yours" and "genuinely new" before anything is
+// downloaded - and so a draw that adds nothing can say so instead of starting
+// a job that has nothing to do.
+const ext = {scene: null, owned: new Set()};
+
+function paintOwned(show){
+  const src = map.getSource && map.getSource('own');
+  if (!src) return;
+  src.setData(show && ext.scene && ext.scene._geojson
+              ? ext.scene._geojson
+              : {type:'FeatureCollection', features:[]});
+}
+
+function extNew(){
+  return [...selected.values()].filter(t => !ext.owned.has(t.name));
+}
+
+function extRefresh(){
+  const loaded = !!ext.scene;
+  const fresh = loaded ? extNew().length : 0;
+  const warn = document.getElementById('x-warn');
+  document.getElementById('x-preview').disabled = !loaded || !fresh;
+  document.getElementById('x-go').disabled      = !loaded || !fresh;
+  if (!loaded){ warn.style.display = 'none'; return; }
+  const picked = selected.size;
+  if (picked && !fresh){
+    warn.textContent = 'Every tile you have selected is already in this '
+      + 'scene. Draw somewhere it does not reach yet.';
+    warn.style.display = 'block';
+  } else {
+    warn.style.display = 'none';
+  }
+  const old = picked - fresh;
+  const line = document.getElementById('x-info').querySelector('.x-sel');
+  if (line) line.textContent =
+    !picked ? 'nothing drawn yet'
+            : `${fresh} new tile(s) to add` + (old ? `, ${old} you already have` : '');
+}
+
+document.getElementById('x-load').onclick = async () => {
+  const path = document.getElementById('x-scene').value.trim();
+  const info = document.getElementById('x-info');
+  if (!path){ alert('Pick the scene.json of the scene you want to extend.'); return; }
+  info.textContent = 'reading…';
+  let d;
+  try {
+    const r = await fetch('/api/scene', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({path: path})});
+    d = await r.json();
+  } catch (e) { info.textContent = 'could not reach the server'; return; }
+  if (d.error){ info.textContent = d.error; ext.scene = null; extRefresh(); return; }
+  ext.scene = d;
+  ext.owned = new Set(d.tiles || []);
+  paintOwned(true);
+  if (d._centre) map.flyTo({center: d._centre, zoom: Math.max(map.getZoom(), 11.5)});
+  // Defaults that belong to the scene, not to this panel.
+  if (d.radius_multiplier) document.getElementById('mult').value = d.radius_multiplier;
+  if (d.raster_res){
+    // Match on the NUMBER: a manifest holding 0.2 never equals the option
+    // string "0.20", and the select would silently fall to blank.
+    const rr = document.getElementById('x-rres');
+    const hit = [...rr.options].find(o => parseFloat(o.value) === parseFloat(d.raster_res));
+    if (hit) rr.value = hit.value;
+  }
+  const vs = (d.variants || []);
+  const light = vs.find(v => v.role === 'sparse') || vs[0];
+  const rows = [
+    ['Scene', d.name || '—'],
+    ['Tiles it has', (d.tiles || []).length],
+    ['Raw points', (d.raw_points || 0).toLocaleString()],
+    ['Origin (kept)', (d.origin || []).join(', ')],
+    ['Clouds built', vs.length ? vs.map(v => `${v.file} (${(v.points||0).toLocaleString()})`).join('<br>') : 'none'],
+    ['Renders recorded', (d.renders || []).length],
+  ];
+  info.innerHTML = rows.map(([k, v]) =>
+      `<div class="stat"><span>${k}</span><span>${v}</span></div>`).join('')
+    + (d.footprint ? '<div class="hint warn">This scene records a carve from '
+        + 'its old, smaller extent. Adding ground clears it, so re-carve in '
+        + 'Blender before the next render prep.</div>' : '')
+    + '<div class="hint x-sel">nothing drawn yet</div>';
+  if (light) document.getElementById('x-target').value =
+    Math.max(1, Math.round((light.points || 40e6) / 1e6));
+  extRefresh();
+};
+
+async function startExtend(dryRun){
+  if (!ext.scene){ alert('Load a scene first.'); return; }
+  const fresh = extNew();
+  if (!fresh.length){ alert('Nothing new is selected.'); return; }
+  // The whole selection goes over, not just the new part: acquire unions it
+  // with the manifest's tiles anyway, and sending everything keeps the two
+  // sides agreeing about what the scene covers.
+  const body = {
+    extend: ext.scene._path,
+    tiles: [...selected.values()].map(t =>
+      ({name: t.name, url: t.url, points: t.points, area: t.area})),
+    rings: carves, rings_out: carvesOut,
+    added_only: document.getElementById('x-sep').checked,
+    target: Math.round((parseFloat(document.getElementById('x-target').value) || 40) * 1e6),
+    raster_res: parseFloat(document.getElementById('x-rres').value) || 0.20,
+    multiplier: parseFloat(document.getElementById('mult').value) || 1.0,
+    download_only: document.getElementById('x-dlonly').checked,
+    dry_run: !!dryRun
+  };
+  const r = await fetch('/api/acquire', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const d = await r.json();
+  if (d.error){ alert(d.error); return; }
+  if (!dryRun) document.getElementById('x-go').disabled = true;
+  document.getElementById('jobsec').style.display = 'block';
+  poll(d.job);
+}
+document.getElementById('x-preview').onclick = () => startExtend(true);
+document.getElementById('x-go').onclick      = () => startExtend(false);
+
+document.getElementById('m-ext').onclick   = () => setPanel('ext');
 document.getElementById('m-acq').onclick   = () => setPanel('acq');
 document.getElementById('m-adopt').onclick = () => setPanel('adopt');
 document.getElementById('m-prep').onclick  = () => setPanel('prep');

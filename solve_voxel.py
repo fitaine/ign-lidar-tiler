@@ -149,9 +149,16 @@ def main():
                    help="Answer anyway when the measurement shows the scene "
                         "cannot deliver the target. The cloud will render as "
                         "specks; you are saying you know that.")
+    p.add_argument("--only", default=None,
+                   help="Text file of tile names, one per line: use just these "
+                        "out of the folder, which may hold other scenes' tiles")
     a = p.parse_args()
 
     tiles = sorted(Path(a.tiles).glob("*.copc.laz"))
+
+    if a.only:
+        keep = {l.strip() for l in Path(a.only).read_text(encoding="utf-8").splitlines() if l.strip()}
+        tiles = [t for t in tiles if t.name in keep]
     if not tiles:
         sys.exit(f"no .copc.laz in {a.tiles}")
 

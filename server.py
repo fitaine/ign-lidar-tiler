@@ -435,7 +435,12 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/scene":
             # Read a manifest so the render-prep panel can show what it is about
             # to work on, and refuse a path that is not one.
-            sp = Path(clean_path(body.get("scene", "")) or "")
+            sp = Path(clean_path(body.get("scene") or body.get("path") or "") or "")
+            # Pointing at the scene folder is the obvious mistake, and the
+            # manifest is always one of two places inside it.
+            if sp.is_dir():
+                sp = next((q for q in (sp / "scene.json", sp / "LIDAR" / "scene.json")
+                           if q.is_file()), sp)
             if not sp.is_file():
                 return self._send(404, {"error": f"not found: {sp}"})
             try:
@@ -445,8 +450,29 @@ class Handler(BaseHTTPRequestHandler):
             if "variants" not in man or "origin" not in man:
                 return self._send(400, {"error": "not a scene manifest"})
             tiles = Path(man.get("tiles_dir") or (sp.parent / "tiles"))
+            man["_path"] = str(sp)
             man["_tiles_present"] = tiles.is_dir()
             man["_tiles_dir"] = str(tiles)
+            # Where the scene's tiles are on the map, so ground you already own
+            # can be drawn differently from ground you are about to draw. A tile
+            # name carries its own corner: LHD_FXX_0971_6300 is x 971000, and
+            # 6300 is its NORTH edge.
+            feats = []
+            for name in man.get("tiles", []):
+                bits = name.split("_")
+                try:
+                    x0, y1 = int(bits[2]) * 1000, int(bits[3]) * 1000
+                except (IndexError, ValueError):
+                    continue
+                x1, y0 = x0 + 1000, y1 - 1000
+                feats.append({"type": "Feature", "properties": {"name": name},
+                              "geometry": {"type": "Polygon", "coordinates": [[
+                                  list(to_wgs84(x, y)) for x, y in
+                                  ((x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0))]]}})
+            man["_geojson"] = {"type": "FeatureCollection", "features": feats}
+            bb = man.get("bbox") or []
+            man["_centre"] = (list(to_wgs84((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2))
+                              if len(bb) == 4 else None)
             return self._send(200, man)
 
         if u.path == "/api/prepare":
@@ -477,7 +503,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"job": jid, "ahead": ahead})
 
         if u.path == "/api/acquire":
-            if "name" not in body or "out" not in body:
+            # Extending supplies the name, the folder and - the one that
+            # matters - the origin, straight from the manifest.
+            extend = clean_path(body["extend"]) if body.get("extend") else None
+            if extend and not Path(extend).is_file():
+                return self._send(400, {"error": f"not a file: {extend}"})
+            if not extend and ("name" not in body or "out" not in body):
                 return self._send(400, {"error": "need name and out"})
             if not body.get("tiles") and not body.get("ring") \
                     and not body.get("rings") and "bbox_l93" not in body:
@@ -523,7 +554,16 @@ class Handler(BaseHTTPRequestHandler):
                                           "coordinates": [[q] for q in polys]}),
                               encoding="utf-8")
                 where = ["--geojson", str(gj)]
-            args = ["--name", body["name"], "--out", clean_path(body["out"])] + where + [
+            args = []
+            if extend:
+                args += ["--extend", extend]
+                if body.get("added_only"):
+                    args += ["--added-only"]
+            if body.get("name"):
+                args += ["--name", body["name"]]
+            if body.get("out"):
+                args += ["--out", clean_path(body["out"])]
+            args += where + [
                     "--target", str(int(body.get("target", 40_000_000))),
                     "--raster-res", str(body.get("raster_res", 0.20)),
                     "--multiplier", str(body.get("multiplier", 1.0))]
